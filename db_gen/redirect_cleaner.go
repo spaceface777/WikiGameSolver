@@ -62,6 +62,7 @@ func main() {
 	rows.Close()
 	ins.Close()
 	db.Exec("END TRANSACTION")
+	db.Exec("PRAGMA optimize")
 	db.Close()
 	tdb.Close()
 }
