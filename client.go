@@ -5,9 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"os"
+	"runtime"
 	"strings"
 	"time"
+
+	"net/http"
+	_ "net/http/pprof"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -18,6 +23,10 @@ var stmt *sql.Stmt
 
 func main() {
 	open_db()
+
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 
 	if len(os.Args) < 3 {
 		// interactive mode
@@ -38,20 +47,25 @@ func main() {
 		start, target := os.Args[1], os.Args[2]
 		run(start, target)
 	}
+
+	db.Exec("PRAGMA optimize")
 }
 
 func open_db() {
-	db_, err := sql.Open("sqlite3", "./db.sqlite")
+	db_, err := sql.Open("sqlite3", "db.sqlite")
 	if err != nil {
-		fmt.Printf("Error opening database: %q\n", err)
-		os.Exit(1)
+		log.Fatalf("Error opening database: %q\n", err)
 	}
 	db = db_
+	// fast queries
 	db.Exec("PRAGMA locking_mode = EXCLUSIVE")
+	db.Exec("PRAGMA synchronous = OFF")
+	db.Exec("PRAGMA journal_mode = OFF")
+	db.Exec("PRAGMA temp_store = OFF")
+	db.Exec(fmt.Sprintf("PRAGMA threads = %d", runtime.NumCPU()))
 	stmt_, err := db.Prepare("SELECT links FROM data WHERE name = ?")
 	if err != nil {
-		fmt.Printf("Error preparing stmt: %q\n", err)
-		os.Exit(1)
+		log.Fatalf("Error preparing stmt: %q\n", err)
 	}
 	stmt = stmt_
 }
@@ -92,11 +106,12 @@ func find_path(start string, target string) ([]string, error) {
 	if len(get(target)) == 0 {
 		return nil, errors.New(fmt.Sprintf("target page `%s` not found", target))
 	}
-	for depth := 3; ; depth++ {
+	for depth := 2; ; depth++ {
 		path := dfs(start, target, 0, depth, []string{})
 		if len(path) > 0 {
 			return path, nil
 		}
+		fmt.Println("Increasing depth...")
 	}
 }
 
@@ -118,6 +133,7 @@ func dfs(node string, target string, depth int, limit int, path_ []string) []str
 		path = append(path, node)
 
 		for _, child := range children {
+			child = strings.Split(child, "|")[0]
 			res := dfs(child, target, depth+1, limit, path)
 			if len(res) > 0 {
 				return res
