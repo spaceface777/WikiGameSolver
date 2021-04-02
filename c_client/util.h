@@ -1,5 +1,6 @@
 // copy something to the heap
-#define HEAP(src) ((typeof(src)*)memcpy(malloc(sizeof(src)), &((typeof(src)[]){src}), sizeof(src)))
+// #define HEAP(src) ((typeof(src)*)memcpy(malloc(sizeof(src)), &((typeof(src)[]){src}), sizeof(src)))
+#define HEAP(src) (memcpy(malloc(sizeof(src)), &src, sizeof(src)))
 
 #define null NULL
 

@@ -27,7 +27,11 @@ static inline string string_clone(string str) {
     return (string){ .str = ptr, .len = l };
 }
 
-static inline void __println_wrapper(int count, ...) {
+static inline void string_free(string str) {
+    // free((void*)str.str);
+}
+
+static void __println_wrapper(int count, ...) {
     va_list args;
     va_start(args, count);
     for (int i = 0; i < count - 1; i++) {
