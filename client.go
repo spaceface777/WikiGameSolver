@@ -9,28 +9,34 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
+
+	//"runtime"
 	"strings"
 	"time"
 
 	"net/http"
 	_ "net/http/pprof"
 
-	"github.com/mattn/go-sqlite3"
+	// lru "github.com/hashicorp/golang-lru"
+	_ "github.com/mattn/go-sqlite3"
 	flag "github.com/spf13/pflag"
 )
 
-var db *sql.DB
-var cache map[string]int = make(map[string]int)
-var stmt *sql.Stmt
-
-var start string = ""
-var target string = ""
-var mem bool = false
+var start = ""
+var target = ""
+var mem = false
+var verbose = false
+var cache_size = 0
 
 func init() {
+	debug.SetGCPercent(100)
+
 	flag.StringVarP(&start, "start", "s", "", "starting Wikipedia entry")
 	flag.StringVarP(&target, "target", "t", "", "target Wikipedia entry")
 	flag.BoolVarP(&mem, "memory", "m", false, "load the entire database to memory")
+	flag.BoolVarP(&verbose, "verbose", "v", false, "print verbose output")
+	flag.IntVarP(&cache_size, "cache_size", "c", 1000000, "custom cache size. Expect ~200mb of memory usage for every million entries")
 
 	help := false
 	flag.BoolVarP(&help, "help", "h", false, "show this help menu")
@@ -50,7 +56,14 @@ func printHelp() {
 	flag.PrintDefaults()
 }
 
+var db *sql.DB
+
+// var cache *lru.ARCCache
+var stmt *sql.Stmt
+
 func main() {
+	// cache, _ = lru.NewARC(cache_size)
+
 	open_db()
 
 	go func() {
@@ -68,6 +81,7 @@ func main() {
 			fmt.Print("Enter target entry: ")
 			target, _ = reader.ReadString('\n')
 			target = strings.Trim(target, "\r\n\t\v ")
+			run(start, target)
 		}
 	} else if target == "" {
 		fmt.Println("Error: no target page specified\n")
@@ -80,51 +94,68 @@ func main() {
 
 func open_db() {
 	if mem {
-		var conns [2]*sqlite3.SQLiteConn
-		i := 0
-		sql.Register("sqlite3_with_hook_example",
-			&sqlite3.SQLiteDriver{
-				ConnectHook: func(conn_ *sqlite3.SQLiteConn) error {
-					// fmt.Printf("Connected: %#v\n", conn_)
-					conns[i] = conn_
-					i++
-					return nil
-				}})
-
-		idb, err := sql.Open("sqlite3_with_hook_example", "db.sqlite")
+		// TODO: figure out why the backup API doesn't work
+		fmt.Println("Reading db into memory...")
+		fdb, err := sql.Open("sqlite3", "dbv3_lite.sqlite")
 		if err != nil {
 			log.Fatalf("Error opening database: %q\n", err)
 		}
-		idb.Ping() // force connect
-
-		db_, err := sql.Open("sqlite3_with_hook_example", ":memory:")
+		mdb, err := sql.Open("sqlite3", ":memory:")
 		if err != nil {
 			log.Fatalf("Error opening database: %q\n", err)
 		}
-		db = db_
-		db.Ping() // force connect
-		if _, err = db.Exec("CREATE TABLE data (name TEXT PRIMARY KEY, links TEXT)"); err != nil {
-			log.Fatal(err)
+
+		mdb.Exec("CREATE TABLE IF NOT EXISTS data (name TEXT PRIMARY KEY, links TEXT)")
+		mdb.Exec("BEGIN TRANSACTION")
+
+		ins, err := mdb.Prepare("INSERT OR REPLACE INTO data VALUES (?, ?)")
+		if err != nil {
+			log.Fatalf("Error preparing stmt: %q\n", err)
 		}
 
-		bk, err := conns[1].Backup("main", conns[0], "main")
-		if _, err = bk.Step(1000000); err != nil {
+		var count int
+		if x := fdb.QueryRow("SELECT COUNT(*) FROM data"); x != nil {
+			x.Scan(&count)
+		}
+
+		rows, err := fdb.Query("SELECT * FROM data")
+		if err != nil {
 			log.Fatal(err)
 		}
-		bk.Finish()
+		for i := 0; rows.Next(); i++ {
+			var name string
+			var links string
+			rows.Scan(&name, &links)
+
+			if i%10000 == 0 {
+				mdb.Exec("END TRANSACTION")
+				mdb.Exec("BEGIN TRANSACTION")
+				fmt.Printf("\rprocessed %d rows (%.2f%%)", i, float64(i*100)/float64(count))
+				// we need to free as much memory as possible
+				runtime.GC()
+			}
+
+			ins.Exec(name, links)
+		}
+
+		mdb.Exec("END TRANSACTION")
+		fmt.Println("\rFinished reading db into memory\n\n")
+
+		db = mdb
+
 	} else {
-		db_, err := sql.Open("sqlite3", "db.sqlite")
+		db_, err := sql.Open("sqlite3", "dbv3.sqlite")
 		if err != nil {
 			log.Fatalf("Error opening database: %q\n", err)
 		}
 		db = db_
 	}
 	// fast queries
-	db.Exec("PRAGMA locking_mode = EXCLUSIVE")
-	db.Exec("PRAGMA synchronous = OFF")
-	db.Exec("PRAGMA journal_mode = OFF")
-	db.Exec("PRAGMA temp_store = OFF")
-	db.Exec(fmt.Sprintf("PRAGMA threads = %d", runtime.NumCPU()))
+	//db.Exec("PRAGMA locking_mode = EXCLUSIVE")
+	//db.Exec("PRAGMA synchronous = OFF")
+	//db.Exec("PRAGMA journal_mode = OFF")
+	//db.Exec("PRAGMA temp_store = OFF")
+	//db.Exec(fmt.Sprintf("PRAGMA threads = %d", runtime.NumCPU()))
 	stmt_, err := db.Prepare("SELECT links FROM data WHERE name = ?")
 	if err != nil {
 		log.Fatalf("Error preparing stmt: %q\n", err)
@@ -157,10 +188,10 @@ func run(start string, target string) {
 }
 
 func find_path(start string, target string) ([]string, error) {
-	// defer func() {
-	// 	cache = make(map[string]int)
-	// 	runtime.GC()
-	// }()
+	defer func() {
+		// cache.Purge()
+		runtime.GC()
+	}()
 
 	if len(get(start)) == 0 {
 		return nil, errors.New(fmt.Sprintf("start page `%s` not found", start))
@@ -178,24 +209,36 @@ func find_path(start string, target string) ([]string, error) {
 }
 
 // TODO: threaded / non-recursive implementation?
-func dfs(node string, target string, depth int, limit int, path_ []string) []string {
+func dfs(node_ string, target string, depth int, limit int, path_ []string) []string {
+	// s := strings.Split(node_, "|")
+	// node := s[0]
+	// fnode := node
+	// if len(s) > 1 {
+	// 	fnode = s[1] + " (" + s[0] + ")"
+	// 	// fnode = fmt.Sprintf("%s (%s)", s[1], s[0])
+	// }
+	node, fnode := node_, node_
+
 	if node == target {
 		path := append([]string(nil), path_...)
-		path = append(path, node)
+		path = append(path, fnode)
 		return path
 	}
 
-	if depth > limit || (!mem && cache[node] >= limit-depth) {
+	if depth > limit {
 		return []string{}
 	}
+
+	// if val, ok := cache.Get(node); ok && val.(int) >= limit-depth {
+	// 	return []string{}
+	// }
 
 	if limit > depth+1 {
 		children := get(node)
 		path := append([]string(nil), path_...)
-		path = append(path, node)
+		path = append(path, fnode)
 
 		for _, child := range children {
-			child = strings.Split(child, "|")[0]
 			res := dfs(child, target, depth+1, limit, path)
 			if len(res) > 0 {
 				return res
@@ -203,8 +246,6 @@ func dfs(node string, target string, depth int, limit int, path_ []string) []str
 		}
 	}
 
-	if !mem {
-		cache[node] = limit - depth
-	}
+	// cache.Add(node, limit-depth)
 	return []string{}
 }

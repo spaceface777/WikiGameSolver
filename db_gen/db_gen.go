@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	file     = "./dump.xml"
+	file     = "./enwiki.xml"
 	db_file  = "./tdb.sqlite"
 	dump_len = 1300000000 // conservative estimate of the # of lines in the dump
 )
@@ -22,25 +22,6 @@ var link_regex = regexp.MustCompile(`\[\[([^:]+?)\]\]`)
 var title_regex = regexp.MustCompile(`<title>([^:]+?)<\/title>`)
 var block_regex = regexp.MustCompile(`{{.+?}}`)
 var redirect_regex = regexp.MustCompile(`<redirect title="([^:]+?)"`)
-
-func uniques(s []string) []string {
-	seen := make(map[string]struct{}, len(s))
-	j := 0
-	for _, v := range s {
-		part := v
-		idx := strings.IndexByte(v, '|')
-		if idx > 0 {
-			part = v[:idx]
-		}
-		if _, ok := seen[part]; ok {
-			continue
-		}
-		seen[part] = struct{}{}
-		s[j] = v
-		j++
-	}
-	return s[:j]
-}
 
 func main() {
 	file, _ := os.Open(file)
@@ -96,7 +77,7 @@ func main() {
 
 		if line == "</page>" {
 			if redirects_to == "" {
-				stmt.Exec(current_page, strings.Join(uniques(links), "\x01"), "")
+				stmt.Exec(current_page, strings.Join(links, "\x01"), "")
 			} else {
 				stmt.Exec(current_page, "", redirects_to)
 			}
@@ -111,7 +92,7 @@ func main() {
 			m := strings.Split(html.UnescapeString(match[1]), "|")
 			// m := strings.Split(match[1], "|")
 			m[0] = strings.Split(m[0], "#")[0]
-			links = append(links, strings.Join(m, "|"))
+			links = append(links, m[0])
 		}
 	}
 }
