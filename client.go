@@ -144,7 +144,7 @@ func open_db() {
 		db = mdb
 
 	} else {
-		db_, err := sql.Open("sqlite3", "dbv3.sqlite")
+		db_, err := sql.Open("sqlite3", "db.sqlite")
 		if err != nil {
 			log.Fatalf("Error opening database: %q\n", err)
 		}

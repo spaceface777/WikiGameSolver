@@ -11,11 +11,19 @@
 #define QUERY(src) ""src, sizeof(src)
 
 #define PANIC(msg) {\
+    fprintf(stderr, "panic: "msg);\
+    exit(1);\
+}
+
+#define SQL_PANIC(msg) {\
     fprintf(stderr, "panic: "msg": %s\n", sqlite3_errmsg(db));\
-    sqlite3_close(db);\
     exit(1);\
 }
 
 #define ASSERT(cond, msg) {\
     if (!(cond)) { PANIC(msg) }\
+}
+
+#define SQL_ASSERT(cond, msg) {\
+    if (!(cond)) { SQL_PANIC(msg) }\
 }
