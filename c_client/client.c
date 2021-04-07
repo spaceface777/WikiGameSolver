@@ -185,7 +185,7 @@ static inline string get(string query) {
 		const char* x = (char*)sqlite3_column_text(stmt, 0);
 		res = string_clone((string){ .str = x, .len = sqlite3_column_bytes(stmt, 0) });
 	} else {
-		res = string_clone(SLIT(""));
+		res = SLIT("");
 	}
 	SQL_ASSERT(sqlite3_reset(stmt) == SQLITE_OK, "failed to reset stmt")
 	return res;
@@ -244,7 +244,7 @@ static bool dfs(string node, string target, int depth, int limit, Node* path) {
 		if (path->next == null) {
 			path->next = HEAP((Node){});
 		}
-		// NOTE: `next_result` does NOT allocate a new string *on purpose* -
+		// NOTE: `next_result` does NOT allocate new strings *on purpose* -
 		// it creates a pointer to a substring of the original buffer instead.
 		while (next_result(&link)) {
 			if (dfs(link.page, target, depth+1, limit, path->next)) {
