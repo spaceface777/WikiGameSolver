@@ -7,6 +7,10 @@
 #include "util.h"
 #include "string.h"
 
+#ifdef WIN32
+#include <windows.h>
+#endif
+
 #define DB "../db.sqlite"
 
 typedef struct Path Path;
@@ -127,35 +131,37 @@ static void load_mem() {
 
 static Path find_path(string start, string target) {
 	#ifdef WIN32
-		LARGE_INTEGER start = {0};
-		QueryPerformanceCounter(&start);
+		LARGE_INTEGER start_time = {0};
+		QueryPerformanceCounter(&start_time);
 	#endif
 
 	string start_query = get(start);
 	string target_query = get(target);
 	if (start_query.len == 0) {
 		printf("start page `%.*s` %d not in the database\n", start.len, start.str, start.len);
-		exit(1);
+		return (Path){0};
 	}
 	if (target_query.len == 0) {
 		printf("target page `%.*s` not in the database\n", target.len, target.str);
-		exit(1);
+		return (Path){0};
 	}
 	string_free(&start_query);
 	string_free(&target_query);
 
 	Path path = (Path){ HEAP((Node){ .data = string_clone(start) }) };
 	for (int depth = 2; ; depth++) {
+		printf("searching at depth=%d...\n", depth);
 		if (dfs(start, target, 0, depth, path.node)) {
+
+			#ifdef WIN32
+				LARGE_INTEGER end_time = {0};
+				QueryPerformanceCounter(&end_time);
+				printf("%d\n", end_time.QuadPart - start_time.QuadPart);
+			#endif
+
 			return path;
 		}
 	}
-
-	#ifdef WIN32
-		LARGE_INTEGER end = {0};
-		QueryPerformanceCounter(&end);
-		printf("%d\n", end.QuadPart - start.QuadPart);
-	#endif
 }
 
 static inline void print_path(Path path) {

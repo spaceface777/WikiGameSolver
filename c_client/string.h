@@ -1,39 +1,40 @@
 #include <string.h>
 #include <stdbool.h>
 
+typedef char* string;
+
 // create a string literal
-#define SLIT(x) ((string){ .str = ""x, .len = (int)sizeof(x) - 1, .flags = STR_LITERAL })
+#define SLIT(x) ((string)((uintptr_t)""x | ((uintptr_t)(sizeof(x) - 1)<<48)))
 
-// create a string from a const char*
-#define STR(x) ((string){ .str = (const char*)x, .len = (int)strlen((const char*)x) })
-
-#define STR_LITERAL (1<<0)
-#define STR_FREED (1<<1)
-
-typedef struct string {
-    const char* str;
-    int len;
-	int flags;
-} string;
-
-static inline bool string_eq(string a, string b) {
-    if (a.len != b.len) return false;
-    return !memcmp(a.str, b.str, a.len);
+INLINE unsigned short STR_LEN(string x) {
+    return (uintptr_t)x >> 48;
 }
 
-static inline string string_clone(string s) {
-    int l = s.len;
+INLINE char* STR_PTR(string x) {
+    return (char*)((uintptr_t)x & 0xFFFFFFFFFFFF);
+}
+
+INLINE string STR(char* ptr, short len) {
+    return (string)((uintptr_t)ptr | ((uintptr_t)len<<48));
+}
+
+INLINE bool string_eq(string a, string b) {
+    if (STR_LEN(a) != STR_LEN(b)) return false;
+    return !memcmp(STR_PTR(a), STR_PTR(b), STR_LEN(a));
+}
+
+INLINE string string_clone(string s) {
+    int l = STR_LEN(s);
+	char* p = STR_PTR(s);
     char* ptr = malloc(l + 1);
-    memcpy(ptr, s.str, l);
+    memcpy(ptr, p, l);
     ptr[l] = 0;
-    return (string){ .str = ptr, .len = l, .flags = s.flags & ~STR_LITERAL };
+    return STR(ptr, l);
 }
 
-static inline void string_free(string* str) {
-	if (str->flags & STR_FREED) PANIC("string.free: double free detected")
-	if (str->flags & STR_LITERAL) return;
-	free((void*)str->str);
-	str->flags |= STR_FREED;
+INLINE void string_free(string* str) {
+	free(STR_PTR(*str));
+	*str = 0;
 }
 
 static void __println_wrapper(int count, ...) {
@@ -41,10 +42,10 @@ static void __println_wrapper(int count, ...) {
     va_start(args, count);
     for (int i = 0; i < count - 1; i++) {
         string x = va_arg(args, string);
-        printf("%.*s ", x.len, x.str);
+        printf("%.*s ", STR_LEN(x), STR_PTR(x));
     }
     string x = va_arg(args, string);
-    printf("%.*s", x.len, x.str);
+    printf("%.*s", STR_LEN(x), STR_PTR(x));
     puts("");
 }
 
