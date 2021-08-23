@@ -2,14 +2,15 @@
 #include <stdio.h>
 #include <stdint.h>
 // #include <string.h>
-#include <io.h>
 
 #include "sqlite.h"
 #include "util.h"
 #include "string.h"
+#include "input.h"
 
 #ifdef WIN32
 #include <windows.h>
+#include <io.h>
 #endif
 
 #define DB "../db.sqlite"
@@ -22,7 +23,6 @@ typedef struct Entry Entry;
 static void load_mem();
 static Entry* find_entry(string name);
 static Path find_path(string start, string target);
-static string input(string prompt);
 static void print_path(Path path);
 static void print_entry(Entry path);
 static void path_free(Path head);
@@ -47,6 +47,10 @@ struct Entry {
 int nr_entries = 0;
 Entry* entries;
 
+
+int cache_hits;
+int cache_misses;
+
 int main(int argc, char** argv) {
 	sqlite3_initialize();
 
@@ -54,7 +58,9 @@ int main(int argc, char** argv) {
 
 	if (argc < 3) {
 		while(1) {
-			string start = input(SLIT("\nenter a starting entry: "));
+			cache_hits = cache_misses = 0;
+			putchar('\n');
+			string start = input(SLIT("enter a starting entry: "));
 			string target = input(SLIT("enter a target entry: "));
 
 			Path path = find_path(start, target);
@@ -64,6 +70,7 @@ int main(int argc, char** argv) {
 			string_free(&start);
 			string_free(&target);
 
+			printf("%dh | %dm = %.1f%% \n\n", cache_hits, cache_misses, (double)cache_hits/(cache_hits+cache_misses)*100);
 			// reset all depth checks:
 			for (int i = 0; i < nr_entries; i++) {
 				entries[i].checked_depth = 0;
@@ -91,12 +98,13 @@ static void load_mem() {
 	puts("reading db file into memory...");
 	SQL_ASSERT(sqlite3_open(DB, &db) == SQLITE_OK, "cannot open database");
 
-	#pragma region part 1: preload all link keys ()
+	#pragma region part 1: preload all page names
 	sqlite3_stmt* x;
 	SQL_ASSERT(sqlite3_prepare_v2(db, QUERY("SELECT count(*) FROM data"), &x, 0) == SQLITE_OK, "failed to prepare stmt");
 	if (sqlite3_step(x) == SQLITE_ROW) {
 		nr_entries = sqlite3_column_int(x, 0);
 	}
+	sqlite3_finalize(x);
 	entries = calloc(nr_entries, sizeof(Entry));
 	Entry** link_cache = calloc(1<<20, sizeof(Entry*));
 	SQL_ASSERT(sqlite3_prepare_v2(db, QUERY("SELECT name FROM data"), &stmt, 0) == SQLITE_OK, "failed to prepare stmt");
@@ -112,7 +120,7 @@ static void load_mem() {
 
 	SQL_ASSERT(sqlite3_prepare_v2(db, QUERY("SELECT * FROM data"), &stmt, 0) == SQLITE_OK, "failed to prepare stmt");
 	for (int i = 0; sqlite3_step(stmt) == SQLITE_ROW; i++) {
-		if ((i & 0x3ff) == 0) printf("\rloaded %d/%d rows (%0.1f%%)", i, nr_entries, (double)i / nr_entries * 100);
+		if ((i & 0x3ff) == 0) printf("\rloaded %d/%d rows (%0.1f%%)\r", i, nr_entries, (double)i / nr_entries * 100);
 		string name = STR((char*)sqlite3_column_text(stmt, 0), sqlite3_column_bytes(stmt, 0));
 		Entry* entry = find_entry(name);
 		if (!entry) continue;
@@ -176,7 +184,7 @@ Entry* find_entry(string name) {
 	const int len = STR_LEN(name);
 	const char* ptr = STR_PTR(name);
 
-	int l = 0, r = nr_entries;
+	int l = 0, r = nr_entries - 1;
 	while (l <= r) {
         int m = l + (r - l) / 2;
 		Entry* e = entries + m;
@@ -195,29 +203,6 @@ Entry* find_entry(string name) {
         else if (cmp < 0) r = m - 1;
     }
 	return null;
-}
-
-static string input(string prompt) {
-	char buf[1024];
-
-	while(1) {
-		write(1, STR_PTR(prompt), STR_LEN(prompt));
-
-		if (fgets (&buf[0], sizeof(buf), stdin) == null) {
-			puts("invalid input, please try again");
-			continue;
-		}
-
-		int len = strlen(buf) - 1;
-		if (buf[len] != '\n') {
-			puts("invalid input, please try again");
-			continue;
-		}
-
-		// Otherwise remove newline and give string back to caller.
-		buf[len] = '\0';
-		return string_clone(STR(buf, len));
-	}
 }
 
 static Path find_path(string start, string target) {
@@ -287,7 +272,7 @@ static bool dfs(string node, string target, int depth, int limit, Node* path) {
 	if (limit > depth+1) {
 		Entry* entry = find_entry(node);
 		int d = limit - depth;
-		if (entry->checked_depth >= d) return false;
+		if (entry->checked_depth >= d) { cache_hits++; return false; } else { cache_misses++; }
 
 		if (!path->next) path->next = HEAP((Node){});
 
