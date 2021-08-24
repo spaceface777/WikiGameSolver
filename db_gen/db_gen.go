@@ -2,10 +2,11 @@ package main
 
 import (
 	"bufio"
+	"compress/bzip2"
 	"database/sql"
 	"fmt"
 	"html"
-	"os"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -13,9 +14,9 @@ import (
 )
 
 const (
-	file     = "./enwiki.xml"
-	db_file  = "./tdb.sqlite"
+	dump_url = "https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-pages-articles.xml.bz2"
 	dump_len = 1300000000 // conservative estimate of the # of lines in the dump
+	db_file  = "./tdb.sqlite"
 )
 
 var link_regex = regexp.MustCompile(`\[\[([^:]+?)\]\]`)
@@ -24,7 +25,6 @@ var block_regex = regexp.MustCompile(`{{.+?}}`)
 var redirect_regex = regexp.MustCompile(`<redirect title="([^:]+?)"`)
 
 func main() {
-	file, _ := os.Open(file)
 	db, _ := sql.Open("sqlite3", db_file)
 
 	db.Exec("CREATE TABLE IF NOT EXISTS data (name TEXT PRIMARY KEY, links TEXT, redirect TEXT)")
@@ -46,7 +46,12 @@ func main() {
 	current_page := ""
 	links := []string{}
 
-	scanner := bufio.NewScanner(file)
+	client := http.Client{}
+	res, _ := client.Get(dump_url)
+	defer res.Body.Close()
+	
+	unc := bzip2.NewReader(res.Body)	
+	scanner := bufio.NewScanner(unc)
 	scanner.Buffer(nil, 1024*1024*100)
 
 	for i := 0; scanner.Scan(); i++ {
