@@ -38,7 +38,6 @@ func main() {
 		stmt.Close()
 		db.Exec("END TRANSACTION")
 		db.Close()
-		file.Close()
 	}()
 
 	inside_page := true
