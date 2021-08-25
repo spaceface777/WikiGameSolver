@@ -7,6 +7,12 @@ on:
 
 jobs:
   create-updated-wiki-dump:
+    strategy:
+      fail-fast: false
+      matrix:
+        lang: [en, es, fr, de, zh, ja, ru]
+
+    name: ${{ matrix.lang }}wiki Dump Gen
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
@@ -18,20 +24,19 @@ jobs:
 
     - name: Get current date
       id: date
-      run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+      run: echo "::set-output name=date::$(date +'%Y.%m.%d')"
 
     - name: Build (part 1)
-      run: go run ./db_gen/db_gen.go
+      run: go run ./db_gen/db_gen.go ${{ matrix.lang }}
 
     - name: Build (part 2)
-      run: go run ./db_gen/redirect_cleaner.go
+      run: go run ./db_gen/redirect_cleaner.go ${{ matrix.lang }}
 
     - name: Compress
-      run: 7z a db.7z db.sqlite
+      run: 7z a ${{ matrix.lang }}.db.7z ${{ matrix.lang }}.db
 
     - name: Upload
       uses: softprops/action-gh-release@v1
       with:
-        files: db.7z
-        tag_name: latest
-        body: \*Last updated on ${{ steps.date.outputs.date }}*
+        files: ${{ matrix.lang }}.db.7z
+        tag_name: ${{ steps.date.outputs.date }}
