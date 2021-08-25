@@ -34,7 +34,7 @@ func uniques(s []string) []string {
 }
 
 func main() {
-	for _, lang := os.Args[1..] {
+	for _, lang := os.Args[1:] {
 		db, _ := sql.Open("sqlite3", strings.Replace(db_file, "[LANG]", lang))
 		tdb, _ := sql.Open("sqlite3", strings.Replace(tdb_file, "[LANG]", lang))
 
