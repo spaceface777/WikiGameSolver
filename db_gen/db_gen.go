@@ -26,7 +26,7 @@ var block_regex = regexp.MustCompile(`{{.+?}}`)
 var redirect_regex = regexp.MustCompile(`<redirect title="([^:]+?)"`)
 
 func main() {
-	for _, country := range os.Args[1..] {
+	for _, country := range os.Args[1:] {
 		db_file := strings.Replace(db_tmpl, "[LANG]", country)
 		dump_url := strings.Replace(url_tmpl, "[LANG]", country)
 		db, _ := sql.Open("sqlite3", db_file)
