@@ -27,8 +27,8 @@ var redirect_regex = regexp.MustCompile(`<redirect title="([^:]+?)"`)
 
 func main() {
 	for _, country := range os.Args[1:] {
-		db_file := strings.Replace(db_tmpl, "[LANG]", country)
-		dump_url := strings.Replace(url_tmpl, "[LANG]", country)
+		db_file := strings.Replace(db_tmpl, "[LANG]", country, -1)
+		dump_url := strings.Replace(url_tmpl, "[LANG]", country, -1)
 		db, _ := sql.Open("sqlite3", db_file)
 
 		db.Exec("CREATE TABLE IF NOT EXISTS data (name TEXT PRIMARY KEY, links TEXT, redirect TEXT)")
