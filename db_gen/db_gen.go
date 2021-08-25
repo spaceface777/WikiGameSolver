@@ -16,7 +16,7 @@ import (
 
 const (
 	db_tmpl  = "TEMP_[LANG].db"
-	url_tmpl = "https://dumps.wikimedia.org/[LANG]wiki/latest/[LANG]wiki-latest-pages-articles.xml.bz2"
+	url_tmpl = "http://dumps.wikimedia.your.org/[LANG]wiki/latest/[LANG]wiki-latest-pages-articles.xml.bz2"
 	dump_len = 1300000000 // conservative estimate of the # of lines in the dump
 )
 
