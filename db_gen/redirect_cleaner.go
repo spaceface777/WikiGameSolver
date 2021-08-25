@@ -35,8 +35,8 @@ func uniques(s []string) []string {
 
 func main() {
 	for _, lang := os.Args[1:] {
-		db, _ := sql.Open("sqlite3", strings.Replace(db_file, "[LANG]", lang))
-		tdb, _ := sql.Open("sqlite3", strings.Replace(tdb_file, "[LANG]", lang))
+		db, _ := sql.Open("sqlite3", strings.Replace(db_file, "[LANG]", lang, -1))
+		tdb, _ := sql.Open("sqlite3", strings.Replace(tdb_file, "[LANG]", lang, -1))
 
 		fmt.Println("caching db into memory...")
 		db.Exec("CREATE TABLE IF NOT EXISTS data (name TEXT PRIMARY KEY, links TEXT)")
