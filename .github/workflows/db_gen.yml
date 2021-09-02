@@ -3,7 +3,7 @@ name: Regenerate DB
 on:
   workflow_dispatch:
   schedule:
-    - cron: '5 4 * * 2' # run weekly
+    - cron: '0 4 3,22 * *' # run on days 3/22 of each month (dumps start on days 1/20 and take a few days to complete)
 
 jobs:
   create-updated-wiki-dump:
@@ -22,9 +22,11 @@ jobs:
       with:
         go-version: 1.17
 
-    - name: Get current date
-      id: date
-      run: echo "::set-output name=date::$(date +'%Y.%m.%d')"
+    - name: Prerequisites
+      id: setup
+      run: |
+        sudo apt install -y jq
+        echo "::set-output name=date::$(date +'%Y.%m.%d')"
 
     - name: Build (part 1)
       run: go run ./db_gen/db_gen.go ${{ matrix.lang }}
@@ -39,4 +41,4 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: ${{ matrix.lang }}.db.7z
-        tag_name: ${{ steps.date.outputs.date }}
+        tag_name: ${{ steps.setup.outputs.date }}
