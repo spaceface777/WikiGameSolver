@@ -26,3 +26,15 @@
 
 #include "thirdparty/sqlite3.c"
 #include "thirdparty/sqlite3.h"
+
+
+#define SQL_PANIC(msg) {\
+	fprintf(stderr, "panic: "msg": %s\n", sqlite3_errmsg(db));\
+	exit(1);\
+}
+
+#ifndef NASSERT
+	#define SQL_ASSERT(cond, msg) { if (!(cond)) { SQL_PANIC(msg) } }
+#else
+	#define SQL_ASSERT(cond, msg) { (cond) }
+#endif

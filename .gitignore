@@ -17,4 +17,7 @@
 **/*.out
 **/node_modules/
 **/*.sqlite*
+**/*.db*
+**/*.gcda*
+**/*.bin*
 dump.xml

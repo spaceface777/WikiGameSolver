@@ -17,24 +17,12 @@
 	exit(1);\
 }
 
-#define SQL_PANIC(msg) {\
-	fprintf(stderr, "panic: "msg": %s\n", sqlite3_errmsg(db));\
-	exit(1);\
-}
-
 #ifndef NASSERT
 	#define ASSERT(cond, msg) {\
 		if (!(cond)) { PANIC(msg) }\
 	}
-
-	#define SQL_ASSERT(cond, msg) {\
-		if (!(cond)) { SQL_PANIC(msg) }\
-	}
 #else
 	#define ASSERT(cond, msg) { (cond) }
-
-	#define SQL_ASSERT(cond, msg) { (cond) }
-	}
 #endif
 
 #ifndef MIN
@@ -47,3 +35,15 @@ INLINE void* memdup(const void* src, size_t len) {
 	memcpy(dst, src, len);
 	return dst;
 }
+
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+
+typedef float f32;
+typedef double f64;
