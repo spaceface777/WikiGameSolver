@@ -12,8 +12,6 @@
 #include <windows.h>
 #endif
 
-#define DB "db.sqlite"
-
 typedef struct Path Path;
 typedef struct Node Node;
 typedef struct Link Link;
@@ -45,13 +43,18 @@ static int sort_entries(const Entry* a, const Entry* b) {
 }
 
 int main(int argc, char** argv) {
+	if (argc < 3) {
+		printf("usage: %s <input db> <output db>", argv[0]);
+		exit(1);
+	}
+	
 	sqlite3_initialize();
 
 	sqlite3* db;
 	sqlite3_stmt* stmt;
 
 	puts("reading db file into memory...");
-	SQL_ASSERT(sqlite3_open(DB, &db) == SQLITE_OK, "cannot open database");
+	SQL_ASSERT(sqlite3_open(argv[1], &db) == SQLITE_OK, "cannot open database");
 
 	#pragma region part 1: preload all page names
 	sqlite3_stmt* x;
@@ -120,7 +123,7 @@ int main(int argc, char** argv) {
 
     /////////////////////////////////
 
-    FILE* f = fopen("db.bin", "wb");
+    FILE* f = fopen(argv[2], "wb");
 
 	#define FWRITE(e, s, c) do { \
 		int _c; \
