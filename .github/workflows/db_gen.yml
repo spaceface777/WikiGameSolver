@@ -36,7 +36,7 @@ jobs:
 
     - name: Build (part 3)
       run: |
-        gcc -O3 -o migrate ./c_client/db_migrate.c
+        gcc -O3 -o migrate ./c_client/db_migrate.c -pthread -ldl
         ./migrate ${{ matrix.lang }}.db ${{ matrix.lang }}.bin
 
     - name: Compress
