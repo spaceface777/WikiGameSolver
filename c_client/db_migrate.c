@@ -145,7 +145,8 @@ int main(int argc, char** argv) {
 
 		FWRITE(&e->nr_links, sizeof(u16), 1);
 		for (int j = 0; j < e->nr_links; j++) {
-			FWRITE(&e->links[j], sizeof(u32), 1);
+			int l = e->links[j] - entries;
+			FWRITE(&l, sizeof(u32), 1);
 		}
 	}
 	fclose(f);
