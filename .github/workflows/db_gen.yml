@@ -3,7 +3,7 @@ name: Regenerate DB
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 3,22 * *' # run on days 3/22 of each month (dumps start on days 1/20 and take a few days to complete)
+    - cron: '0 4 4,23 * *' # run on days 4/23 of each month (dumps start on days 1/20 and take a few days to complete)
 
 jobs:
   create-updated-wiki-dump:
