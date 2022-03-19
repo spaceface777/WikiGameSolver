@@ -55,7 +55,7 @@ func main() {
 
 		unc := bzip2.NewReader(res.Body)	
 		scanner := bufio.NewScanner(unc)
-		scanner.Buffer(nil, 1024*1024*100)
+		scanner.Buffer(nil, 1024*1024*1024)
 
 		for i := 0; scanner.Scan(); i++ {
 			line := strings.Trim(scanner.Text(), "\r\n\t\v ")
@@ -74,12 +74,12 @@ func main() {
 			}
 
 			if title := title_regex.FindAllStringSubmatch(line, -1); len(title) > 0 && len(title[0]) > 1 {
-				current_page = title[0][1]
+				current_page = html.UnescapeString(title[0][1])
 				continue
 			}
 
 			if redirect := redirect_regex.FindStringSubmatch(line); len(redirect) > 0 {
-				redirects_to = redirect[1]
+				redirects_to = html.UnescapeString(redirect[1])
 				continue
 			}
 
