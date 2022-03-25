@@ -16,7 +16,7 @@ import (
 
 const (
 	db_tmpl  = "TEMP_[LANG].db"
-	url_tmpl = "http://dumps.wikimedia.your.org/[LANG]wiki/latest/[LANG]wiki-latest-pages-articles.xml.bz2"
+	url_tmpl = "http://dumps.wikimedia.org/[LANG]wiki/20220320/[LANG]wiki-20220320-pages-articles.xml.bz2"
 	dump_len = 1300000000 // conservative estimate of the # of lines in the dump
 )
 
@@ -85,7 +85,7 @@ func main() {
 
 			if line == "</page>" {
 				if redirects_to == "" {
-					stmt.Exec(current_page, strings.Join(links, "\x01"), "")
+					stmt.Exec(current_page, strings.Join(links, "\n"), "")
 				} else {
 					stmt.Exec(current_page, "", redirects_to)
 				}
@@ -98,8 +98,10 @@ func main() {
 			line = block_regex.ReplaceAllLiteralString(line, "")
 			for _, match := range link_regex.FindAllStringSubmatch(line, -1) {
 				m := strings.Split(html.UnescapeString(match[1]), "|")
-				// m := strings.Split(match[1], "|")
 				m[0] = strings.Split(m[0], "#")[0]
+				if len(m) > 1 {
+					m[0] += "\t"+m[1]
+				}
 				links = append(links, m[0])
 			}
 		}

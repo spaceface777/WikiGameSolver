@@ -34,13 +34,14 @@ jobs:
     - name: Build (part 2)
       run: go run ./db_gen/redirect_cleaner.go ${{ matrix.lang }}
 
-    - name: Build (part 3)
-      run: |
-        gcc -O3 -o migrate ./c_client/db_migrate.c -pthread -ldl
-        ./migrate ${{ matrix.lang }}.db ${{ matrix.lang }}.bin
+    # - name: Build (part 3)
+    #   run: |
+    #     gcc -O3 -o migrate ./c_client/db_migrate.c -pthread -ldl
+    #     ./migrate ${{ matrix.lang }}.db ${{ matrix.lang }}.bin
 
     - name: Compress
-      run: 7z a ${{ matrix.lang }}.db.7z ${{ matrix.lang }}.bin
+      # run: 7z a ${{ matrix.lang }}.db.7z ${{ matrix.lang }}.bin
+      run: 7z a ${{ matrix.lang }}.db.7z ${{ matrix.lang }}.db
 
     - name: Upload
       uses: softprops/action-gh-release@v1

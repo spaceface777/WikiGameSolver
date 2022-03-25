@@ -19,7 +19,7 @@ func uniques(s []string) []string {
 	j := 0
 	for _, v := range s {
 		part := v
-		idx := strings.IndexByte(v, '|')
+		idx := strings.IndexByte(v, '\t')
 		if idx > 0 {
 			part = v[:idx]
 		}
@@ -67,7 +67,7 @@ func main() {
 			var links_ string
 			var redirect string
 			rows.Scan(&name, &links_, &redirect)
-			links := strings.Split(links_, "\x01")
+			links := strings.Split(links_, "\n")
 
 			if i%10000 == 0 {
 				db.Exec("END TRANSACTION")
@@ -76,13 +76,16 @@ func main() {
 			}
 
 			for j, link := range links {
-				parts := strings.Split(link, "|")
+				parts := strings.Split(link, "\t")
 				if dest, found := redirects[parts[0]]; found {
+					if len(parts) == 1 {
+						parts = append(parts, parts[0])
+					}
 					parts[0] = dest
 				}
-				links[j] = strings.Join(parts, "|")
+				links[j] = strings.Join(parts, "\t")
 			}
-			ins.Exec(name, strings.Join(uniques(links), "\x01"))
+			ins.Exec(name, strings.Join(uniques(links), "\n"))
 			// ins.Exec(name, strings.Join(links, "\x01"))
 		}
 
