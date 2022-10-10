@@ -20,4 +20,9 @@
 **/*.db*
 **/*.gcda*
 **/*.bin*
+dbs/
 dump.xml
+c_client/keys.h
+dep/
+.DS_Store
+**/*.dSYM/

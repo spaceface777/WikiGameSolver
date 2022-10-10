@@ -1,0 +1,579 @@
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#endif
+
+#include "util.h"
+#include "array.h"
+#include "string.h"
+#include "input.h"
+#include "time.h"
+#include "thread_pool.h"
+#include "minlzma.h"
+
+typedef struct Path Path;
+typedef struct Node Node;
+typedef struct Link Link;
+typedef struct Entry Entry;
+
+static void load_mem(char* path);
+static Entry* find_entry(string name);
+static Path find_path(string start, string target);
+static void print_path(Path path);
+static void path_free(Path* head);
+
+#if __has_include("keys.h")
+#include "keys.h"
+#else
+#warning "No keys.h found, using default keys. This may be INSECURE if server mode is used."
+#include "keys_default.h"
+#endif
+
+#if UINTPTR_MAX != 0xffffffffffffffff
+#error "This program only supports 64-bit architectures."
+#endif
+
+typedef struct DFSState {
+	int idx;
+	u8 depth;
+	u8 limit;
+} DFSState;
+static bool dfs(Entry* entry, string target, DFSState state, Node* path);
+
+struct Path {
+	Node* node;
+};
+
+struct Node {
+	string data;
+	Node* next;
+};
+
+struct Entry {
+	string title;
+	array  links;
+};
+
+static int nr_entries = 0;
+static Entry* entries;
+
+_Thread_local static u8* depths;
+
+#ifdef DEBUG_CACHE
+_Thread_local static int cache_hits = 0;
+_Thread_local static int cache_misses = 0;
+#endif
+
+typedef struct Range {
+	int start, end;
+} Range;
+
+Range bsearch_ranged(string name) {
+	const int len = STR_LEN(name);
+	const char* ptr = STR_PTR(name);
+
+	Range ans = { -1, -1 };
+
+	int l = 0, m, r = nr_entries - 1;
+
+	while (l < r) {
+		m = (l + r) / 2;
+		Entry* e = entries + m;
+		const int entry_len = STR_LEN(e->title);
+		const char* entry_ptr = STR_PTR(e->title);
+		const int cmp = strncmp(entry_ptr, ptr, MIN(entry_len, len));
+		if (cmp < 0) l = m + 1;
+		else r = m;
+	}
+
+	ans.start = l;
+	r = nr_entries - 1;
+
+	while (l < r) {
+		m = (l + r) / 2 + 1;
+		Entry* e = entries + m;
+		const int entry_len = STR_LEN(e->title);
+		const char* entry_ptr = STR_PTR(e->title);
+		const int cmp = strncmp(entry_ptr, ptr, MIN(entry_len, len));
+		if (cmp > 0) r = m - 1;
+		else l = m;
+	}
+	ans.end = r;
+
+	if ((ans.end < ans.start) || (ans.end >= nr_entries) || (ans.start < 0) || (ans.start == ans.end && strncmp(STR_PTR(entries[ans.start].title), ptr, MIN(STR_LEN(entries[ans.start].title), len)) != 0)) {
+		ans.start = -1;
+		ans.end = -1;
+	}
+	return ans;
+}
+
+void completion(const char *buf, linenoiseCompletions *lc) {
+	if (buf == 0) return;
+
+	int blen = strlen(buf);
+	Range p = bsearch_ranged(STR((char*)buf, blen));
+
+	if (p.start == -1) return;
+
+	int count = p.end - p.start + 1;
+
+	int i = 0;
+	Entry* first_match = entries + p.start;
+	if ((count != 1) && (STR_LEN(first_match->title) - blen) <= 1) i = 1;
+
+	for (/* i */; i < MAX(count, 100); i++) {
+		Entry* e = entries + (p.start + i);
+		linenoiseAddCompletionN(lc, STR_PTR(e->title), STR_LEN(e->title));
+	}
+}
+
+char* hints(const char* buf, int* color, int* bold) {
+	if (buf == 0) return 0;
+
+	int blen = strlen(buf);
+	Range p = bsearch_ranged(STR((char*)buf, blen));
+
+	int count = p.end - p.start + 1;
+	if (count < 1 || p.start == -1) {
+		// char tbuf[1024];
+		// *color = 31;
+		// snprintf(tbuf, sizeof(tbuf), "%*s (not found)", blen, buf);
+		// return strdup(tbuf);
+		return strdup("\x1b[31m (not found)\x1b[0m");
+	}
+
+	*color = 34;
+	*bold = 0;
+
+	Entry* first_match = entries + p.start;
+	if ((count == 1) || (STR_LEN(first_match->title) - blen) > 1) {
+		return STR_PTR(first_match->title) + strlen(buf);
+	}
+
+	return STR_PTR(entries[p.start+1].title) + strlen(buf);
+}
+
+void atexit_handler(void) {
+	for (int i = 0; i < nr_entries; i++) {
+		array_free(&entries[i].links);
+		string_free(&entries[i].title);
+	}
+	free(entries);
+}
+
+typedef struct ThreadData {
+	string start;
+	string target;
+	Path   path;
+	int    connfd;
+} ThreadData;
+
+_Atomic int nr_jobs = 0;
+
+void* thread_main(void* ptr) {
+	ThreadData* data = (ThreadData*)ptr;
+	depths = calloc(nr_entries, sizeof(u8));
+
+	Path path = find_path(data->start, data->target);
+	data->path = path;
+
+	free(depths);
+
+	return 0;
+}
+
+void threadpool_main(void* ptr) {
+	ThreadData* data = (ThreadData*)ptr;
+
+	thread_main(ptr);
+
+	Path path = data->path;
+
+	if (data->connfd != -1) {
+		Node* node = path.node;
+		if (!node) {
+			write(data->connfd, "No path found", sizeof("No path found")-1);
+			close(data->connfd);
+			return;
+		}
+
+		while (node != null) {
+			write(data->connfd, STR_PTR(node->data), STR_LEN(node->data));
+			write(data->connfd, "\n", 1);
+			node = node->next;
+		}
+		close(data->connfd);
+	}
+
+	path_free(&path);
+	free(ptr);
+
+	printf("finished a job; %d remaining\n", --nr_jobs);
+}
+
+int main(int argc, char** argv) {
+	TIME_INIT();
+	load_mem("db.bin");
+	atexit(atexit_handler);
+
+	if (argc < 3) {
+		linenoiseSetCompletionCallback(completion);
+		linenoiseSetHintsCallback(hints);
+
+		while(1) {
+			#ifdef DEBUG_CACHE
+			cache_hits = cache_misses = 0;
+			#endif
+			putchar('\n');
+			putchar('\n');
+			ThreadData data;
+			data.start = input(SLIT("enter a starting entry: "));
+			data.target = input(SLIT("enter a target entry: "));
+
+			if (data.start==0 || data.target==0) break;
+			
+			u64 start_time = get_monotonic_time();
+			pthread_t tid;
+			pthread_create(&tid, NULL, thread_main, &data);
+			pthread_join(tid, NULL);
+			u64 end_time = get_monotonic_time();
+
+			print_path(data.path);
+
+			println(SLIT("\nSearch took"), format_time(end_time - start_time));
+
+			path_free(&data.path);
+			string_free(&data.start);
+			string_free(&data.target);
+
+			#ifdef DEBUG_CACHE
+			printf("%dh | %dm = %.1f%% \n\n", cache_hits, cache_misses, (double)cache_hits/(cache_hits+cache_misses)*100);
+			#endif
+
+			// reset all depth checks (UNNEEDED because `depths` is thread_local and each thread is only used once)
+			// memset(depths, 0, nr_entries);
+		}
+	} else if (argc == 3 && (strcmp(argv[1], "-l") == 0 || strcmp(argv[1], "--listen") == 0)) {
+		int port = atoi(argv[2]);
+		if (port < 1 || port > 65535) {
+			puts("invalid port");
+			return 1;
+		}
+	
+		int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+		if (sockfd < 0) {
+			puts("socket creation failed...");
+			exit(1);
+		}
+	
+		struct sockaddr_in servaddr = {0};
+		servaddr.sin_family = AF_INET;
+		servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+		servaddr.sin_port = htons(port);
+	
+		if ((bind(sockfd, (void*)&servaddr, sizeof(servaddr))) != 0) {
+			perror("socket bind failed");
+			exit(1);
+		}
+
+		if ((listen(sockfd, 100)) != 0) {
+			perror("Listen failed");
+			exit(1);
+		}
+		printf("Listening on port %d...\n", port);
+		char buf_data[65536];
+
+		threadpool pool = thpool_init(sysconf(_SC_NPROCESSORS_ONLN));
+
+		while(1) {
+			struct sockaddr_in cli;
+			socklen_t len = sizeof(cli);
+		
+			int connfd = accept(sockfd, (void*)&cli, &len);
+			if (connfd < 0) {
+				perror("server accept failed");
+				continue;
+			}
+
+			const int buf_size = sizeof(buf_data)-1;
+			char* buf = buf_data;
+			memset(buf, 0, buf_size);
+	
+			int nread = read(connfd, buf, buf_size);
+			if (nread < 1) {
+				perror("read failed");
+				close(connfd);
+				continue;
+			}
+
+			if ((nread < sizeof(key1)) || memcmp(buf, key1, sizeof(key1)-1) != 0) {
+				puts("received invalid signature");
+				goto err;
+			}
+			nread = sizeof(key1)-1;
+			buf += sizeof(key1)-1;
+
+			int slen;
+			int t = 0;
+			if (sscanf(buf, "%d%n", &slen, &t) < 0) goto err;
+			if (slen < 0 || slen > (buf_size>>1)) {
+				fprintf(stderr, "got invalid len\n");
+				goto err;
+			}
+			nread += t;
+			buf += t;
+			string start = string_clone(STR(buf, slen));
+			nread += slen;
+			buf += slen;
+
+			if (sscanf(buf, "%d%n", &slen, &t) < 0) goto err;
+			if (slen < 0 || slen+nread > (buf_size>>1)) {
+				fprintf(stderr, "got invalid len\n");
+				goto err;
+			}
+
+			nread += t;
+			buf += t;
+			string target = string_clone(STR(buf, slen));
+			nread += slen;
+			buf += slen;
+
+			ThreadData data = { .start=start, .target=target, .path={0}, .connfd=connfd };			
+			thpool_add_work(pool, (void*)threadpool_main, memdup(&data, sizeof(data)));
+
+			printf("launched job #%d:\t%.*s -> %.*s\n", ++nr_jobs, STR_LEN(start), STR_PTR(start), STR_LEN(target), STR_PTR(target));
+
+			continue;
+err:
+			buf[0] = 'N';
+			buf[1] = 'O';
+			buf[2] = '\n';
+			buf[3] = '\0';
+			write(connfd, buf, 3);
+			close(connfd);
+			continue;
+		}		
+	} else {
+		string start = string_clone(STR(argv[1], strlen(argv[1])));
+		string target = string_clone(STR(argv[2], strlen(argv[2])));
+
+		Path path = find_path(start, target);
+		if (path.node) {
+			print_path(path);
+		} else {
+			println(SLIT("No path found"));
+		}
+	}
+
+	return 0;
+}
+
+
+static void load_mem(char* path) {
+	puts("reading db file into memory...");
+
+	FILE* compressed = fopen(path, "rb");
+	if (compressed == NULL) {
+		fprintf(stderr, "error: could not open db file: %s\n", strerror(errno));
+		exit(1);
+	}
+
+	fseek(compressed, 0, SEEK_END);
+	long compressed_len = ftell(compressed);
+	fseek(compressed, 0, SEEK_SET);
+
+	char* compressed_buf = malloc(compressed_len);
+	if (fread(compressed_buf, 1, compressed_len, compressed) != compressed_len) {
+		fprintf(stderr, "error: could not read db file: %s\n", strerror(errno));
+		exit(1);
+	}
+	fclose(compressed);
+
+#ifdef NO_COMPRESSION
+	char* buf = malloc(compressed_len);
+	memcpy(buf, compressed_buf, compressed_len);
+#else
+	uint32_t len = 0;
+	XzDecode((void*)compressed_buf, compressed_len, NULL, &len);
+
+	printf("Decompressing data...\n");
+
+	char* buf = malloc(len);
+	XzDecode((void*)compressed_buf, compressed_len, (void*)buf, &len);
+#endif
+	printf("Processing data...\n");
+
+	free(compressed_buf);
+
+	char* p = buf;
+	memcpy(&nr_entries, p, sizeof(int));
+	entries = malloc(sizeof(Entry) * nr_entries);
+	p += sizeof(int);
+
+	for (int i = 0; i < nr_entries; i++) {
+		Entry* e = &entries[i];
+
+		u16 nr_links;
+		memcpy(&nr_links, p, sizeof(u16));
+		e->links = ARR(0, nr_links);
+		p += sizeof(u16);
+	}
+
+	for (int i = 0; i < nr_entries; i++) {
+		Entry* e = &entries[i];
+		if (e->links == 0) continue;
+		u16 nr_links = ARR_LEN(e->links);
+		int* link_buf = malloc(sizeof(int) * nr_links);
+		for (int j = 0; j < nr_links; j++) {
+			memcpy(&link_buf[j], p, sizeof(u32));
+			p += sizeof(u32);
+		}
+		e->links = ARR(link_buf, nr_links);
+	}
+	for (int i = 0; i < nr_entries; i++) {
+		Entry* e = &entries[i];
+
+		u16 l;
+		memcpy(&l, p, sizeof(u16));
+		p += sizeof(u16);
+		e->title = (void*)(ptrdiff_t)l;
+	}
+	for (int i = 0; i < nr_entries; i++) {
+		Entry* e = &entries[i];
+
+		u16 l = (u16)(ptrdiff_t)e->title;
+		char* buf = malloc(l+1);
+		buf[l] = '\0';
+		memcpy(buf, p, l);
+		p += l;
+		e->title = ARR(buf, l);
+	}
+
+	free(buf);
+}
+
+Entry* find_entry(string name) {
+	const int len = STR_LEN(name);
+	const char* ptr = STR_PTR(name);
+
+	int l = 0, r = nr_entries - 1;
+	while (l <= r) {
+        int m = l + (r - l) / 2;
+		Entry* e = entries + m;
+
+		const int entry_len = STR_LEN(e->title);
+		const char* entry_ptr = STR_PTR(e->title);
+
+		const int cmp = strncmp(ptr, entry_ptr, MAX(len, entry_len));
+        if (!cmp) {
+			if (string_eq(name, e->title)) {
+				return e;
+			}
+			return null;
+		}
+        if (cmp > 0) l = m + 1;
+        else if (cmp < 0) r = m - 1;
+    }
+	return null;
+}
+
+static Path find_path(string start, string target) {
+	Entry* start_entry = find_entry(start);
+	Entry* target_entry = find_entry(target);
+	if (!start_entry) {
+		printf("start page `%.*s` not in the database\n", STR_LEN(start), STR_PTR(start));
+		return (Path){0};
+	}
+	if (!target_entry) {
+		printf("target page `%.*s` not in the database\n", STR_LEN(target), STR_PTR(target));
+		return (Path){0};
+	}
+
+	Path path = (Path){ HEAP((Node){ .data = string_clone(start) }) };
+	for (int depth = 2; depth < 12; depth++) {
+		DFSState state = (DFSState){ .depth = 0, .limit = depth, .idx = (start_entry - entries) };
+		if (dfs(start_entry, target, state, path.node))
+			return path;
+	}
+	path_free(&path);
+	return path;
+}
+
+static inline void print_path(Path path) {
+	Node* node = path.node;
+	if (!node) {
+		println(SLIT("\n\nNo path found."));
+		return;
+	}
+
+	println(SLIT("\n\nShortest path:"));
+
+	while (node != null) {
+		println(SLIT(" -> "), node->data);
+		node = node->next;
+	}
+}
+
+static inline void path_free(Path* path) {
+	Node* tmp;
+	Node* node = path->node;
+	while (node != null) {
+		tmp = node;
+		node = node->next;
+		string_free(&tmp->data);
+		free(tmp);
+	}
+	path->node = 0;
+}
+
+static bool dfs(Entry* entry, string target, DFSState state, Node* path) {
+	string node = entry->title;
+	if (string_eq(node, target)) {
+		path->data = node;
+		return true;
+	}
+
+	if (state.limit > state.depth+1) {
+		int d = state.limit - state.depth;
+		u8* checked_depth = depths+state.idx;
+		if (*checked_depth >= d) {
+			#ifdef DEBUG_CACHE
+			++cache_hits;
+			#endif
+			return false;
+		}
+		#ifdef DEBUG_CACHE
+		++cache_misses;
+		#endif
+		*checked_depth = d;
+
+		if (!path->next) path->next = HEAP((Node){});
+
+		u16 nr_links = ARR_LEN(entry->links);
+		int* links = ARR_PTR(entry->links);
+		for (int i = 0; i < nr_links; i++) {
+			int newi = links[i];
+			Entry* child = entries + newi;
+			DFSState new_state = (DFSState){ .depth = state.depth + 1, .limit = state.limit, .idx = newi };
+			if (dfs(child, target, new_state, path->next)) {
+				string str = string_clone(child->title);
+				path->next->data = str;
+				return true;
+			}
+		}
+	}
+	return false;
+}

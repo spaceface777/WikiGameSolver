@@ -456,6 +456,21 @@ void linenoiseAddCompletion(linenoiseCompletions *lc, const char *str) {
     lc->cvec[lc->len++] = copy;
 }
 
+void linenoiseAddCompletionN(linenoiseCompletions *lc, const char *str, size_t len) {
+    char *copy, **cvec;
+
+    copy = malloc(len+1);
+    if (copy == NULL) return;
+    memcpy(copy,str,len+1);
+    cvec = realloc(lc->cvec,sizeof(char*)*(lc->len+1));
+    if (cvec == NULL) {
+        free(copy);
+        return;
+    }
+    lc->cvec = cvec;
+    lc->cvec[lc->len++] = copy;
+}
+
 /* =========================== Line editing ================================= */
 
 /* We define a very simple "append buffer" structure, that is an heap

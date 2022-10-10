@@ -3,6 +3,9 @@
 
 static string input(string prompt) {
 	char* res = linenoise(STR_PTR(prompt));
+	if (res == 0) {
+		exit(0);
+	}
 	linenoiseHistoryAdd(res);
 	return STR(res, strlen(res));
 }

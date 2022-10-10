@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lang: [en, es, fr, de, zh, ja, ru, ar]
+        lang: [en, fr, de, ja, it, ru, es, zh, pl, nl, pt, ar]
 
     name: ${{ matrix.lang }}wiki Dump Gen
     runs-on: ubuntu-latest
@@ -20,30 +20,20 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v2
       with:
-        go-version: 1.17
+        go-version: 1.19
 
     - name: Prerequisites
       id: setup
       run: |
-        sudo apt install -y jq
-        echo "::set-output name=date::$(date +'%Y.%m.%d')"
+        sudo apt install -y jq xz-utils
+        echo "::set-output name=date::$(curl https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0] ')"
 
-    - name: Build (part 1)
-      run: go run ./db_gen/db_gen.go ${{ matrix.lang }}
-
-    - name: Build (part 2)
-      run: go run ./db_gen/redirect_cleaner.go ${{ matrix.lang }}
-
-    - name: Build (part 3)
+    - name: Build
       run: |
-        gcc -O3 -o migrate ./c_client/db_migrate.c -pthread -ldl
-        ./migrate ${{ matrix.lang }}.db ${{ matrix.lang }}.bin
-
-    - name: Compress
-      run: 7z a ${{ matrix.lang }}.db.7z ${{ matrix.lang }}.bin
+        go run ./db_gen/db_gen.go  ${{ matrix.lang }} | xz -C crc32 -9 -f - > " ${{ matrix.lang }}.bin"
 
     - name: Upload
       uses: softprops/action-gh-release@v1
       with:
-        files: ${{ matrix.lang }}.db.7z
+        files: ${{ matrix.lang }}.bin
         tag_name: ${{ steps.setup.outputs.date }}
