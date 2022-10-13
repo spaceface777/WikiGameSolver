@@ -394,6 +394,7 @@ err:
 	return 0;
 }
 
+#define DUMP_FORMAT_VERSION 1
 static void load_mem(char* path) {
 	puts("reading db file into memory...");
 
@@ -414,23 +415,51 @@ static void load_mem(char* path) {
 	}
 	fclose(compressed);
 
-#ifdef NO_COMPRESSION
-	char* buf = malloc(compressed_len);
-	memcpy(buf, compressed_buf, compressed_len);
-#else
-	uint32_t len = 0;
-	XzDecode((void*)compressed_buf, compressed_len, NULL, &len);
+	char* buf;
+#ifndef NO_COMPRESSION
+	{
+		unsigned int magic = *(unsigned int*)compressed_buf;
+		if (magic != *(unsigned int*)"WIKI") {
+			uint32_t len = 0;
+			XzDecode((void*)compressed_buf, compressed_len, NULL, &len);
 
-	printf("Decompressing data...\n");
+			puts("Decompressing data...");
 
-	char* buf = malloc(len);
-	XzDecode((void*)compressed_buf, compressed_len, (void*)buf, &len);
+			buf = malloc(len);
+			XzDecode((void*)compressed_buf, compressed_len, (void*)buf, &len);
+			free(compressed_buf);
+		} else {
 #endif
-	printf("Processing data...\n");
-
-	free(compressed_buf);
+			buf = compressed_buf;
+#ifndef NO_COMPRESSION
+		}
+	}
+#endif
+	puts("Processing data...");
 
 	char* p = buf;
+
+	unsigned int magic = *(unsigned int*)p;
+	p += sizeof(magic);
+	if (magic != *(unsigned int*)"WIKI") {
+		fputs("error: invalid magic\n", stderr);
+		exit(1);
+	}
+
+	unsigned int version = *(unsigned int*)p;
+	p += sizeof(version);
+	u8 dump_format = version & 0xff;
+	if (dump_format != DUMP_FORMAT_VERSION) {
+		if (dump_format > DUMP_FORMAT_VERSION) {
+			fputs("error: database file is newer than this program; update your client.\n", stderr);
+		} else {
+			fputs("error: database file is older than this program; update your database.\n", stderr);
+		}
+		exit(1);
+	}
+	int dump_date = version >> 8;
+	printf("[info] database file date: 20%02d.%02d.%02d\n", dump_date/10000, (dump_date/100)%100, dump_date%100);
+
 	memcpy(&nr_entries, p, sizeof(int));
 	entries = malloc(sizeof(Entry) * nr_entries);
 	p += sizeof(int);

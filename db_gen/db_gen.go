@@ -5,9 +5,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,26 +64,48 @@ type DumpIndex struct {
 	} `json:"wikis"`
 }
 
-var id_to_title = make(map[int]string, 0)
-var title_to_id = make(map[string]int, 0)
+var dump_date uint32
+
+var title_to_old_id = make(map[string]int, 0)
+var old_id_to_title = make(map[int]string, 0)
+var old_id_to_new_id = make(map[int]int, 0)
 var redirects = make(map[int]int, 0)
-var links = make(map[int][]int, 0)
+
+var titles []string
+var old_ids []int
+var links [][]int
+
+func title_to_new_id(title string) (int, bool) {
+	id := sort.SearchStrings(titles, title)
+	if id < len(titles) && titles[id] == title {
+		return id, true
+	}
+	return id, false
+}
 
 func main() {
 	for _, lang := range os.Args[1:] {
 		language = lang
-		fmt.Fprintf(os.Stderr, "Generating database for %s", language+"wiki")
+		fmt.Fprintf(os.Stderr, "Generating database for %s\n\n", language+"wiki")
 		get_dump_urls()
 		build_page_table()
 		build_redirects()
+
+		old_ids = nil
+		old_id_to_title = nil
+		title_to_old_id = nil
+		runtime.GC()
+
+		links = make([][]int, len(titles))
 		build_links()
 
-		redirects = nil
+		redirects = make(map[int]int, 0)
+		old_id_to_new_id = make(map[int]int, 0)
+		runtime.GC()
 
 		write_db()
 
-		id_to_title = nil
-		title_to_id = nil
+		titles = make([]string, 0, 1<<20)
 		links = nil
 	}
 }
@@ -106,7 +128,9 @@ func get_dump_urls() {
 	if redirecttable.Status != "done" || len(redirecttable.Files) != 1 {
 		panic("dump is incomplete")
 	}
-	for _, file := range redirecttable.Files {
+	for name, file := range redirecttable.Files {
+		t, _ := strconv.Atoi(strings.Split(name, "-")[1])
+		dump_date = uint32(t) - 20000000
 		redirects_url = mirror + file.URL
 	}
 
@@ -144,17 +168,18 @@ func build_page_table() {
 	}
 	defer r.Close()
 
-	stop := set_interval(500*time.Millisecond, func() {
+	stop := set_interval(200*time.Millisecond, func() {
 		nread := int64(m.Total())
 		nrate := m.BytesPerSec()
 		read := units.Base2Bytes(nread).Floor().String()
 		rate := units.Base2Bytes(nrate).Floor().String()
 
 		rem := time.Duration(float64(ContentLength-nread) / float64(nrate) * float64(time.Second))
+		percent := float64(nread) / float64(ContentLength) * 100
 		if rem < time.Minute {
-			fmt.Fprintf(os.Stderr, "\rStep 1/3     %s/s - %s of %s, %d sec. left               \r", rate, read, total, int(rem.Seconds()))
+			fmt.Fprintf(os.Stderr, "\rStep 1/4     %s/s - %.0f%%, %s of %s, %d sec. left               \r", rate, percent, read, total, int(rem.Seconds()))
 		} else {
-			fmt.Fprintf(os.Stderr, "\rStep 1/3     %s/s - %s of %s, %d min. left               \r", rate, read, total, int(rem.Minutes()))
+			fmt.Fprintf(os.Stderr, "\rStep 1/4     %s/s - %.0f%%, %s of %s, %d min. left               \r", rate, percent, read, total, int(rem.Minutes()))
 		}
 	})
 
@@ -242,8 +267,8 @@ func build_page_table() {
 			}
 
 			if !is_redirect {
-				id_to_title[id] = title
-				title_to_id[title] = id
+				old_id_to_title[id] = title
+				title_to_old_id[title] = id
 			}
 		}
 	}
@@ -252,6 +277,8 @@ func build_page_table() {
 }
 
 func build_redirects() {
+	redirects_old := make(map[int]int, 0)
+
 	res, err := http.Get(redirects_url)
 	if err != nil {
 		panic(err)
@@ -268,17 +295,18 @@ func build_redirects() {
 	}
 	defer r.Close()
 
-	stop := set_interval(500*time.Millisecond, func() {
+	stop := set_interval(100*time.Millisecond, func() {
 		nread := int64(m.Total())
 		nrate := m.BytesPerSec()
 		read := units.Base2Bytes(nread).Floor().String()
 		rate := units.Base2Bytes(nrate).Floor().String()
 
+		percent := float64(nread) / float64(ContentLength) * 100
 		rem := time.Duration(float64(ContentLength-nread) / float64(nrate) * float64(time.Second))
 		if rem < time.Minute {
-			fmt.Fprintf(os.Stderr, "\rStep 2/3     %s/s - %s of %s, %d sec. left               \r", rate, read, total, int(rem.Seconds()))
+			fmt.Fprintf(os.Stderr, "\rStep 2/4     %s/s - %.0f%%, %s of %s, %d sec. left               \r", rate, percent, read, total, int(rem.Seconds()))
 		} else {
-			fmt.Fprintf(os.Stderr, "\rStep 2/3     %s/s - %s of %s, %d min. left               \r", rate, read, total, int(rem.Minutes()))
+			fmt.Fprintf(os.Stderr, "\rStep 2/4     %s/s - %.0f%%, %s of %s, %d min. left               \r", rate, percent, read, total, int(rem.Minutes()))
 		}
 	})
 
@@ -363,33 +391,66 @@ func build_redirects() {
 				continue
 			}
 
-			if _, ok := id_to_title[source_id]; !ok {
+			if _, ok := old_id_to_title[source_id]; !ok {
 				continue
 			}
-			if target_id, ok := title_to_id[title]; ok {
-				redirects[source_id] = target_id
+			if target_id, ok := title_to_old_id[title]; ok {
+				redirects_old[source_id] = target_id
 			}
 		}
 	}
 
-	for source_id, target_id := range redirects {
-		initial_id := source_id
+	for old_source_id, old_target_id := range redirects_old {
+		initial_id := old_source_id
 		nr_redirects := 0
-		for _, ok := redirects[target_id]; ok; {
-			target_id = redirects[target_id]
+		for _, ok := redirects_old[old_target_id]; ok; {
+			old_target_id = redirects_old[old_target_id]
 			nr_redirects++
-			if target_id == initial_id || nr_redirects > 100 {
-				target_id = -1
+			if old_target_id == initial_id || nr_redirects > 100 {
+				old_target_id = -1
 				break
 			}
 		}
-		if target_id != -1 {
-			redirects[source_id] = target_id
+		if old_target_id != -1 {
+			redirects_old[old_source_id] = old_target_id
 		} else {
-			delete(redirects, source_id)
+			delete(redirects_old, old_source_id)
 		}
 	}
+
+	titles = make([]string, len(title_to_old_id))
+	old_ids = make([]int, len(title_to_old_id))
+	i := 0
+	for title, old_id := range title_to_old_id {
+		titles[i] = title
+		old_ids[i] = old_id
+		i++
+	}
+	sort.Sort(Sorter{})
+	for new_id, old_id := range old_ids {
+		old_id_to_new_id[old_id] = new_id
+	}
+
+	for old_source_id, old_target_id := range redirects_old {
+		redirects[old_source_id] = old_id_to_new_id[old_target_id]
+	}
+
 	stop <- true
+}
+
+type Sorter struct{}
+
+func (s Sorter) Len() int {
+	return len(titles)
+}
+
+func (s Sorter) Less(i, j int) bool {
+	return titles[i] < titles[j]
+}
+
+func (s Sorter) Swap(i, j int) {
+	titles[i], titles[j] = titles[j], titles[i]
+	old_ids[i], old_ids[j] = old_ids[j], old_ids[i]
 }
 
 func build_links() {
@@ -409,17 +470,18 @@ func build_links() {
 	}
 	defer r.Close()
 
-	stop := set_interval(500*time.Millisecond, func() {
+	stop := set_interval(300*time.Millisecond, func() {
 		nread := int64(m.Total())
 		nrate := m.BytesPerSec()
 		read := units.Base2Bytes(nread).Floor().String()
 		rate := units.Base2Bytes(nrate).Floor().String()
 
+		percent := float64(nread) / float64(ContentLength) * 100
 		rem := time.Duration(float64(ContentLength-nread) / float64(nrate) * float64(time.Second))
 		if rem < time.Minute {
-			fmt.Fprintf(os.Stderr, "\rStep 3/3     %s/s - %s of %s, %d sec. left               \r", rate, read, total, int(rem.Seconds()))
+			fmt.Fprintf(os.Stderr, "\rStep 3/4     %s/s - %.0f%%, %s of %s, %d sec. left               \r", rate, percent, read, total, int(rem.Seconds()))
 		} else {
-			fmt.Fprintf(os.Stderr, "\rStep 3/3     %s/s - %s of %s, %d min. left               \r", rate, read, total, int(rem.Minutes()))
+			fmt.Fprintf(os.Stderr, "\rStep 3/4     %s/s - %.0f%%, %s of %s, %d min. left               \r", rate, percent, read, total, int(rem.Minutes()))
 		}
 	})
 
@@ -508,79 +570,90 @@ func build_links() {
 				continue
 			}
 
-			if _, ok := id_to_title[source_id]; !ok {
-				continue
-			}
 			if redirect_id, ok := redirects[source_id]; ok {
 				source_id = redirect_id
+			} else if new_id, ok := old_id_to_new_id[source_id]; ok {
+				source_id = new_id
+			} else {
+				continue
 			}
-			if target_id, ok := title_to_id[title]; ok && source_id != target_id {
+			if target_id, ok := title_to_new_id(title); ok && source_id != target_id {
 				links[source_id] = append(links[source_id], target_id)
 			}
 		}
 	}
 
+	for i := range titles {
+		sort.Ints(links[i])
+	}
+
 	stop <- true
 }
 
-func write_db() {
-	fmt.Fprintln(os.Stderr, "\nWriting database...")
+const format_ver = 1
 
-	var f io.Writer
+func write_db() {
+	var f *os.File
 	if isatty.IsTerminal(os.Stdout.Fd()) {
-		file, err := os.Open("./" + language + ".bin")
+		file, err := os.Create("./" + language + ".bin")
 		if err != nil {
 			panic(err)
 		}
-		defer file.Close()
-		f = bufio.NewWriter(file)
+		f = file
 	} else {
-		f = bufio.NewWriter(os.Stdout)
+		f = os.Stdout
 	}
 
-	titles := make([]string, 0, len(id_to_title))
-	for _, title := range id_to_title {
-		titles = append(titles, title)
-	}
-	sort.Strings(titles)
+	bw := bufio.NewWriterSize(f, 1*MiB)
+	w := iocontrol.NewMeasuredWriter(bw)
 
-	sorted_links := make([][]int, 0, len(id_to_title))
-	for _, title := range titles {
-		l := links[title_to_id[title]]
-		for i := 0; i < len(l); i++ {
-			l[i] = sort.SearchStrings(titles, id_to_title[l[i]])
-		}
-		sort.Ints(l)
+	stop := set_interval(100*time.Millisecond, func() {
+		read := units.Base2Bytes(int64(w.Total())).Floor().String()
+		rate := units.Base2Bytes(w.BytesPerSec()).Floor().String()
+		fmt.Fprintf(os.Stderr, "\rStep 4/4     %s/s, %s total   \r", rate, read)
+	})
 
-		sorted_links = append(sorted_links, l)
-	}
-
-	if err := binary.Write(f, binary.LittleEndian, int32(len(titles))); err != nil {
+	if _, err := w.Write([]byte("WIKI")); err != nil {
 		panic(err)
 	}
-	for i, links := range sorted_links {
+
+	version := dump_date<<8 | format_ver
+	if err := binary.Write(w, binary.LittleEndian, version); err != nil {
+		panic(err)
+	}
+
+	if err := binary.Write(w, binary.LittleEndian, int32(len(titles))); err != nil {
+		panic(err)
+	}
+	for i, links := range links {
 		if len(links) >= 1<<16 {
-			panic("too many links: " + titles[i] + " (" + strconv.Itoa(i) + "/" + strconv.Itoa(title_to_id[titles[i]]) + "): " + strconv.Itoa(len(links)))
+			err := fmt.Errorf("\n\ntoo many links: page #%d=`%s`: %d", i, titles[i], len(links))
+			panic(err)
 		}
-		if err := binary.Write(f, binary.LittleEndian, uint16(len(links))); err != nil {
+		if err := binary.Write(w, binary.LittleEndian, uint16(len(links))); err != nil {
 			panic(err)
 		}
 	}
-	for _, links := range sorted_links {
+	for _, links := range links {
 		for _, link := range links {
-			if err := binary.Write(f, binary.LittleEndian, int32(link)); err != nil {
+			if err := binary.Write(w, binary.LittleEndian, int32(link)); err != nil {
 				panic(err)
 			}
 		}
 	}
 	for _, title := range titles {
-		if err := binary.Write(f, binary.LittleEndian, uint16(len(title))); err != nil {
+		if err := binary.Write(w, binary.LittleEndian, uint16(len(title))); err != nil {
 			panic(err)
 		}
 	}
 	for _, title := range titles {
-		if _, err := f.Write([]byte(title)); err != nil {
+		if _, err := w.Write([]byte(title)); err != nil {
 			panic(err)
 		}
 	}
+
+	stop <- true
+	bw.Flush()
+	f.Sync()
+	f.Close()
 }
