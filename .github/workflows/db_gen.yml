@@ -26,7 +26,7 @@ jobs:
       id: setup
       run: |
         sudo apt install -y jq xz-utils
-        echo "::set-output name=date::$(curl https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0] ')"
+        echo "::set-output name=date::$(curl -L https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0] ')"
 
     - name: Initialize swapfile
       run: |

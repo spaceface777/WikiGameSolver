@@ -103,6 +103,15 @@ func main() {
 		old_id_to_new_id = make(map[int]int, 0)
 		runtime.GC()
 
+		for {
+			n := trim_empty_pages()
+			if n == 0 {
+				break
+			}
+			fmt.Fprintf(os.Stderr, "\nTrimmed %d empty pages\n", n)
+			runtime.GC()
+		}
+
 		write_db()
 
 		titles = make([]string, 0, 1<<20)
@@ -400,6 +409,8 @@ func build_redirects() {
 		}
 	}
 
+	stop <- true
+
 	for old_source_id, old_target_id := range redirects_old {
 		initial_id := old_source_id
 		nr_redirects := 0
@@ -434,8 +445,6 @@ func build_redirects() {
 	for old_source_id, old_target_id := range redirects_old {
 		redirects[old_source_id] = old_id_to_new_id[old_target_id]
 	}
-
-	stop <- true
 }
 
 type Sorter struct{}
@@ -588,6 +597,65 @@ func build_links() {
 	}
 
 	stop <- true
+}
+
+func trim_empty_pages() int {
+	empty_pages := []int{}
+
+	for i := range links {
+		if len(links[i]) == 0 {
+			empty_pages = append(empty_pages, i)
+		}
+	}
+
+	for i := range links {
+		for j := 0; j < len(links[i]); {
+			l := links[i][j]
+			b := sort.SearchInts(empty_pages, l)
+			if b < len(empty_pages) && empty_pages[b] == l {
+				links[i] = append(links[i][:j], links[i][j+1:]...)
+			} else {
+				j++
+			}
+		}
+	}
+
+	old_id_to_new_id := make([]int, len(titles))
+	for i := range old_id_to_new_id {
+		old_id_to_new_id[i] = i
+	}
+	for i, id := range empty_pages {
+		var m int
+		if i == len(empty_pages)-1 {
+			m = len(titles)
+		} else {
+			m = empty_pages[i+1]
+		}
+		for j := id; j < m; j++ {
+			old_id_to_new_id[j] -= i + 1
+		}
+	}
+
+	titles_ := make([]string, 0, len(titles)-len(empty_pages))
+	links_ := make([][]int, 0, len(titles_))
+	for i, b := 0, 0; i < len(titles); i++ {
+		if b < len(empty_pages) && empty_pages[b] == i {
+			b++
+			continue
+		}
+		titles_ = append(titles_, titles[i])
+		links_ = append(links_, links[i])
+	}
+	titles = titles_
+	links = links_
+
+	for j := range links {
+		for k := 0; k < len(links[j]); k++ {
+			links[j][k] = old_id_to_new_id[links[j][k]]
+		}
+	}
+
+	return len(empty_pages)
 }
 
 const format_ver = 1
