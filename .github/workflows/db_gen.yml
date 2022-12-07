@@ -26,7 +26,7 @@ jobs:
       id: setup
       run: |
         sudo apt install -y jq xz-utils
-        echo "::set-output name=date::$(curl -L https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0] ')"
+        echo "date=$(curl -L https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0] ')" >> $GITHUB_OUTPUT
 
     - name: Initialize swapfile
       run: |
@@ -38,11 +38,11 @@ jobs:
 
     - name: Build
       run: |
-        cd db_gen
-        go build db_gen.go
+        cd db_gen_c
+        clang++ -Ofast -flto -march=native -mtune=native db_gen.cc -o db_gen -std=c++17 -lz
         mv db_gen ../gen
         cd ..
-        ./gen ${{ matrix.lang }} | xz -C crc32 -9 -f - > "${{ matrix.lang }}.bin"
+        ./gen ${{ matrix.lang }} | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
 
     - name: Upload
       uses: softprops/action-gh-release@v1
