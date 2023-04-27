@@ -1,3 +1,8 @@
+#if !defined(_WIN32) && !defined(ENABLE_SERVER)
+#define ENABLE_PRETTY_INPUT
+#endif
+
+#ifndef __COSMOPOLITAN__
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -5,10 +10,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
-
-#if !defined(_WIN32) && !defined(ENABLE_SERVER)
-#define ENABLE_PRETTY_INPUT
-#endif
+#include <stddef.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -19,13 +21,18 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #endif
+#endif
 
 #include "util.h"
 #include "array.h"
 #include "string.h"
 #include "input.h"
 #include "time.h"
+
+#ifndef NO_COMPRESSION
 #include "minlzma.h"
+// #include "lzma.h"
+#endif
 
 #ifdef ENABLE_SERVER
 #include "thread_pool.h"
@@ -175,11 +182,13 @@ char* hints(const char* buf, int* color, int* bold) {
 #endif
 
 void atexit_handler(void) {
-	for (int i = 0; i < nr_entries; i++) {
-		array_free(&entries[i].links);
-		string_free(&entries[i].title);
-	}
-	free(entries);
+	// for (int i = 0; i < nr_entries; i++) {
+	// 	array_free(&entries[i].links);
+	// 	string_free(&entries[i].title);
+	// }
+	// free(entries[0].links);
+	// free(entries[0].title);
+	// free(entries);
 }
 
 #ifdef ENABLE_SERVER
@@ -236,7 +245,11 @@ void threadpool_main(void* ptr) {
 
 int main(int argc, char** argv) {
 	TIME_INIT();
+	#ifdef NO_COMPRESSION
+	load_mem("db.unc");
+	#else
 	load_mem("db.bin");
+	#endif
 	atexit(atexit_handler);
 
 	if (argc < 3) {
@@ -380,6 +393,8 @@ err:
 		}
 #endif
 	} else {
+		depths = calloc(nr_entries, sizeof(u8));
+
 		string start = string_clone(STR(argv[1], strlen(argv[1])));
 		string target = string_clone(STR(argv[2], strlen(argv[2])));
 
@@ -464,25 +479,32 @@ static void load_mem(char* path) {
 	entries = malloc(sizeof(Entry) * nr_entries);
 	p += sizeof(int);
 
+	uint32_t total_links;
+	memcpy(&total_links, p, sizeof(uint32_t));
+	p += sizeof(uint32_t);
+	u32* link_buf = malloc(sizeof(u32) * total_links);
+
+	uint32_t total_title_bytes;
+	memcpy(&total_title_bytes, p, sizeof(uint32_t));
+	p += sizeof(uint32_t);
+	total_title_bytes += nr_entries; // for null terminators
+	char* title_buf = malloc(total_title_bytes);
+
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &entries[i];
 
 		u16 nr_links;
 		memcpy(&nr_links, p, sizeof(u16));
-		e->links = ARR(0, nr_links);
+		e->links = ARR(link_buf, nr_links);
+		link_buf += nr_links;
 		p += sizeof(u16);
 	}
-
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &entries[i];
 		if (e->links == 0) continue;
 		u16 nr_links = ARR_LEN(e->links);
-		int* link_buf = malloc(sizeof(int) * nr_links);
-		for (int j = 0; j < nr_links; j++) {
-			memcpy(&link_buf[j], p, sizeof(u32));
-			p += sizeof(u32);
-		}
-		e->links = ARR(link_buf, nr_links);
+		memcpy(ARR_PTR(e->links), p, nr_links*sizeof(u32));
+		p += nr_links*sizeof(u32);
 	}
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &entries[i];
@@ -496,11 +518,13 @@ static void load_mem(char* path) {
 		Entry* e = &entries[i];
 
 		u16 l = (u16)(ptrdiff_t)e->title;
-		char* buf = malloc(l+1);
-		buf[l] = '\0';
+
+		char* buf = title_buf;
 		memcpy(buf, p, l);
+		buf[l] = '\0';
 		p += l;
 		e->title = ARR(buf, l);
+		title_buf += l + 1;
 	}
 
 	free(buf);

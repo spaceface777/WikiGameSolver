@@ -1,4 +1,4 @@
-#ifndef ENABLE_PRETTY_INPUT
+#ifdef ENABLE_PRETTY_INPUT
 #include "thirdparty/linenoise.c"
 
 static string input(string prompt) {
@@ -10,7 +10,9 @@ static string input(string prompt) {
 	return STR(res, strlen(res));
 }
 #else
+#ifdef _WIN32
 int __cdecl write(int _Filehandle,const void *_Buf,unsigned int _MaxCharCount);
+#endif
 static string input(string prompt) {
 	char buf[1024];
 	while(1) {

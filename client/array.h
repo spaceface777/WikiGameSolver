@@ -1,6 +1,3 @@
-#include <string.h>
-#include <stdbool.h>
-
 typedef void* array;
 
 INLINE unsigned short ARR_LEN(array x) {

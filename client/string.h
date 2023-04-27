@@ -1,6 +1,3 @@
-#include <string.h>
-#include <stdbool.h>
-
 typedef char* string;
 
 // create a string literal
