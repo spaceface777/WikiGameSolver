@@ -5,12 +5,28 @@
 #include <algorithm>
 #include <vector>
 
+#ifndef LOG
+#define LOG
+#endif
+
+#ifndef STRING_MALLOC
+#define STRING_MALLOC malloc
+#endif
+
+#ifndef STRING_REALLOC
+#define STRING_REALLOC realloc
+#endif
+
+#ifndef STRING_FREE
+#define STRING_FREE free
+#endif
+
 struct RepIndex {
   int idx, val_idx;
 };
 
 static inline void* STRING_H_MALLOC(size_t size) {
-  void* res = malloc(size);
+  void* res = STRING_MALLOC(size);
 #if defined(STRING_ALLOC_LOG)
   fprintf(stderr, "STRING_H_MALLOC(%zu) -> %p\n", size, res);
 #endif
@@ -18,7 +34,7 @@ static inline void* STRING_H_MALLOC(size_t size) {
 }
 
 static inline void* STRING_H_REALLOC(void* ptr, size_t size) {
-  void* res = realloc(ptr, size);
+  void* res = STRING_REALLOC(ptr, size);
 #if defined(STRING_ALLOC_LOG)
   fprintf(stderr, "STRING_H_REALLOC(%p, %zu) -> %p\n", ptr, size, res);
 #endif
@@ -29,7 +45,7 @@ static inline void STRING_H_FREE(void* ptr) {
 #if defined(STRING_ALLOC_LOG)
   fprintf(stderr, "STRING_H_FREE(%p)\n", ptr);
 #endif
-  free(ptr);
+  STRING_FREE(ptr);
 }
 
 class string {
@@ -43,7 +59,10 @@ class string {
 
   inline string() { LOG; };
 
-  inline string(string &a) : ptr(a.ptr), len(a.len) { LOG; };
+  inline string(const string &a) : ptr(a.ptr), len(a.len) { LOG; };
+
+  inline string(const std::string &a) : ptr((uintptr_t)a.c_str()), len(a.size()) { LOG; };
+  inline string(const std::string_view &a) : ptr((uintptr_t)a.data()), len(a.size()) { LOG; };
 
   inline string(const char *ptr, uint16_t len)
       : ptr((uintptr_t)ptr), len(len) {
@@ -56,7 +75,7 @@ class string {
       };
 
   void free() {
-    ::free((void *)(uintptr_t)ptr);
+    ::STRING_FREE((void *)(uintptr_t)ptr);
   }
 
   inline string& operator=(const string &a) {
@@ -133,6 +152,9 @@ class string {
 
   inline const char *p() const { return (const char *)(uintptr_t)ptr; }
 
+  operator std::string() const { return std::string(p(), len); }
+  operator std::string_view() const { return std::string_view(p(), len); }
+
   inline bool is_empty() const { return len == 0; }
 
   // inline void set_owned(bool owned) { is_owned = owned; }
@@ -151,7 +173,6 @@ class string {
   string clone() const {
     string result;
     char* x = (char*)STRING_H_MALLOC(len+1);
-    fprintf(stderr, "clone %p %p %d\n", x, (void *)(uintptr_t)ptr, len);
     memcpy((void *)x, (void *)(uintptr_t)ptr, len);
     x[len] = 0;
     result.ptr = (uintptr_t)x;

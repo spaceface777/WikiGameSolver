@@ -25,10 +25,10 @@ SOFTWARE.
 #pragma warning(disable : 4214)
 #endif
 
-// #include <assert.h>
-// #include <stdbool.h>
-// #include <stddef.h>
-// #include <stdint.h>
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #define LZMA_MAX_SEQUENCE_SIZE 21
 

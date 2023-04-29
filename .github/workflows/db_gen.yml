@@ -25,7 +25,7 @@ jobs:
     - name: Prerequisites
       id: setup
       run: |
-        sudo apt install -y jq xz-utils
+        sudo apt install -y jq xz-utils libxml2-dev libgc-dev
         echo "date=$(curl -L https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0] ')" >> $GITHUB_OUTPUT
 
     - name: Initialize swapfile
@@ -39,10 +39,11 @@ jobs:
     - name: Build
       run: |
         cd db_gen_c
-        clang++ -Ofast -flto -march=native -mtune=native db_gen.cc -o db_gen -std=c++17 -lz
+        clang++ -Ofast -flto -march=native -mtune=native -I/usr/include/libxml2 db_gen_v2.cc -o db_gen -std=c++17 -lxml2 -lgc
         mv db_gen ../gen
         cd ..
-        ./gen ${{ matrix.lang }} | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
+
+        curl -L "https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps$(curl -L https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs.articlesdumprecombine.files|to_entries[0].value.url')" | pv | bzcat | ./gen | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
 
     - name: Upload
       uses: softprops/action-gh-release@v1

@@ -181,7 +181,7 @@ int title_to_new_id(string title) {
     return -1;
 }
 
-int read_lines(const char* buf, int len, void (*callback)(const char*, int)) {
+static inline int read_lines(const char* buf, int len, void (*callback)(const char*, int)) {
     const char* start = buf;
     while (true) {
         const char* end = (const char*)memchr(start, '\n', len - (start - buf));

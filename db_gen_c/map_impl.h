@@ -54,7 +54,6 @@ static int DenseArray_expand(DenseArray* d);
 static void map_free_string(void* pkey);
 static void map_free_nop(void* _d1);
 static map new_map(int key_bytes, int value_bytes, MapHashFn hash_fn, MapEqFn key_eq_fn, MapCloneFn clone_fn, MapFreeFn free_fn);
-static map new_map_init(MapHashFn hash_fn, MapEqFn key_eq_fn, MapCloneFn clone_fn, MapFreeFn free_fn, int n, int key_bytes, int value_bytes, void* keys, void* values);
 map map_move(map* m);
 void map_clear(map* m);
 static multi_return_uint32_t_uint32_t map_key_to_index(map* m, void* pkey);
@@ -65,10 +64,8 @@ static void map_set(map* m, void* key, void* value);
 static void map_expand(map* m);
 static void map_rehash(map* m);
 static void map_cached_rehash(map* m, uint32_t old_cap);
-static void* map_get_and_set(map* m, void* key, void* zero);
 static void* map_get(map* m, void* key, void* zero);
 static void* map_get_check(map* m, void* key);
-static bool map_exists(map* m, void* key);
 static void DenseArray_delete(DenseArray* d, int i);
 void map_delete(map* m, void* key);
 static DenseArray DenseArray_clone(DenseArray* d);
@@ -177,17 +174,7 @@ map new_map(int key_bytes, int value_bytes, MapHashFn hash_fn, MapEqFn key_eq_fn
 		.len = 0,
 	});
 }
-map new_map_init(MapHashFn hash_fn, MapEqFn key_eq_fn, MapCloneFn clone_fn, MapFreeFn free_fn, int n, int key_bytes, int value_bytes, void* keys, void* values) {
-	map out = new_map(key_bytes, value_bytes, hash_fn, key_eq_fn, clone_fn, free_fn);
-	uint8_t* pkey = ((uint8_t*)(keys));
-	uint8_t* pval = ((uint8_t*)(values));
-	for (int _t1 = 0; _t1 < n; ++_t1) {
-		map_set(&out, pkey, pval);
-		pkey = pkey + key_bytes;
-		pval = pval + value_bytes;
-	}
-	return out;
-}
+
 map map_move(map* m) {
 	map r = *m;
 	memset(m, 0, ((int)(sizeof(map))));
@@ -330,30 +317,6 @@ void map_cached_rehash(map* m, uint32_t old_cap) {
 	}
 	free(old_metas);
 }
-void* map_get_and_set(map* m, void* key, void* zero) {
-	for (;;) {
-		multi_return_uint32_t_uint32_t mr_14122 = map_key_to_index(m, key);
-		uint32_t index = mr_14122.arg0;
-		uint32_t meta = mr_14122.arg1;
-		for (;;) {
-			if (meta == m->metas[index]) {
-				int kv_index = ((int)(m->metas[index + 1U]));
-				void* pkey = DenseArray_key(&m->key_values, kv_index);
-				if (m->key_eq_fn(key, pkey)) {
-					void* pval = DenseArray_value(&m->key_values, kv_index);
-					return ((uint8_t*)(pval));
-				}
-			}
-			index += 2U;
-			meta += _const_probe_inc;
-			if (meta > m->metas[index]) {
-				break;
-			}
-		}
-		map_set(m, key, zero);
-	}
-	return ((void*)0);
-}
 void* map_get(map* m, void* key, void* zero) {
 	multi_return_uint32_t_uint32_t mr_14849 = map_key_to_index(m, key);
 	uint32_t index = mr_14849.arg0;
@@ -395,26 +358,6 @@ void* map_get_check(map* m, void* key) {
 		}
 	}
 	return 0;
-}
-bool map_exists(map* m, void* key) {
-	multi_return_uint32_t_uint32_t mr_16024 = map_key_to_index(m, key);
-	uint32_t index = mr_16024.arg0;
-	uint32_t meta = mr_16024.arg1;
-	for (;;) {
-		if (meta == m->metas[index]) {
-			int kv_index = ((int)(m->metas[index + 1U]));
-			void* pkey = DenseArray_key(&m->key_values, kv_index);
-			if (m->key_eq_fn(key, pkey)) {
-				return true;
-			}
-		}
-		index += 2U;
-		meta += _const_probe_inc;
-		if (meta > m->metas[index]) {
-			break;
-		}
-	}
-	return false;
 }
 inline void DenseArray_delete(DenseArray* d, int i) {
 	if (d->deletes == 0U) {
