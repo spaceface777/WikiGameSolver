@@ -43,7 +43,7 @@ jobs:
         mv db_gen ../gen
         cd ..
 
-        curl -L "https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps$(curl -L https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs.articlesdumprecombine.files|to_entries[0].value.url')" | pv | bzcat | ./gen | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
+        curl -L "https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps$(curl -L https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs.articlesdumprecombine.files|to_entries[0].value.url')" | bzcat | ./gen | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
 
     - name: Upload
       uses: softprops/action-gh-release@v1
