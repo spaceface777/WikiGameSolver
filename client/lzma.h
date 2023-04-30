@@ -404,13 +404,16 @@
    sched_getaffinity() */
 /* #undef TUKLIB_CPUCORES_SCHED_GETAFFINITY */
 
+#ifdef __linux__
 /* Define to 1 if the number of available CPU cores can be detected with
    sysconf(_SC_NPROCESSORS_ONLN) or sysconf(_SC_NPROC_ONLN). */
-/* #undef TUKLIB_CPUCORES_SYSCONF */
+#define TUKLIB_CPUCORES_SYSCONF 1
 
+#else
 /* Define to 1 if the number of available CPU cores can be detected with
    sysctl(). */
 #define TUKLIB_CPUCORES_SYSCTL 1
+#endif
 
 /* Define to 1 if the system supports fast unaligned access to 16-bit, 32-bit,
    and 64-bit integers. */
