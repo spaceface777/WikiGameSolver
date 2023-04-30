@@ -182,12 +182,8 @@ char* hints(const char* buf, int* color, int* bold) {
 #endif
 
 void atexit_handler(void) {
-	// for (int i = 0; i < nr_entries; i++) {
-	// 	array_free(&entries[i].links);
-	// 	string_free(&entries[i].title);
-	// }
-	// free(entries[0].links);
-	// free(entries[0].title);
+	// array_free(entries[0].links);
+	// string_free(entries[0].title);
 	// free(entries);
 }
 
@@ -344,7 +340,7 @@ int main(int argc, char** argv) {
 				continue;
 			}
 
-			if ((nread < sizeof(key)) || memcmp(buf, key, sizeof(key)-1) != 0) {
+			if ((nread < (int)sizeof(key)) || memcmp(buf, key, sizeof(key)-1) != 0) {
 				puts("received invalid signature");
 				goto err;
 			}
@@ -571,13 +567,8 @@ Entry* find_entry(string name) {
 		const char* entry_ptr = STR_PTR(e->title);
 
 		const int cmp = strncmp(ptr, entry_ptr, MAX(len, entry_len));
-        if (!cmp) {
-			if (string_eq(name, e->title)) {
-				return e;
-			}
-			return null;
-		}
-        if (cmp > 0) l = m + 1;
+        if (cmp == 0) return e;
+        else if (cmp > 0) l = m + 1;
         else if (cmp < 0) r = m - 1;
     }
 	return null;
@@ -596,7 +587,7 @@ static Path find_path(string start, string target) {
 	}
 
 	Path path = (Path){ HEAP((Node){ .data = string_clone(start) }) };
-	for (int depth = 2; depth < 12; depth++) {
+	for (int depth = 0; depth < 12; depth++) {
 		DFSState state = (DFSState){ .depth = 0, .limit = depth, .idx = (start_entry - entries) };
 		if (dfs(start_entry, target, state, path.node))
 			return path;

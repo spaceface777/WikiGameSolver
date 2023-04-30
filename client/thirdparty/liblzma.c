@@ -3199,6 +3199,16 @@ extern lzma_ret lzma_lzip_decoder_init(
 		lzma_next_coder *next, const lzma_allocator *allocator,
 		uint64_t memlimit, uint32_t flags);
 
+lzma_ret lzma_lzip_decoder_init(
+		lzma_next_coder *next, const lzma_allocator *allocator,
+		uint64_t memlimit, uint32_t flags) {
+			(void)next;
+			(void)allocator;
+			(void)memlimit;
+			(void)flags;
+			return LZMA_PROG_ERROR;
+		}
+
 #endif
 
 #endif

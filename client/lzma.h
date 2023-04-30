@@ -608,4 +608,8 @@
    pointer, if such a type exists, and if the system does not define it. */
 /* #undef uintptr_t */
 
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
 #include "thirdparty/liblzma.c"
+#pragma GCC diagnostic pop 
