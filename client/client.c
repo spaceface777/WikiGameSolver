@@ -253,7 +253,7 @@ int main(int argc, char** argv) {
 	atexit(atexit_handler);
 
 	if (argc < 3) {
-#ifndef _WIN32
+#ifdef ENABLE_PRETTY_INPUT
 		linenoiseSetCompletionCallback(completion);
 		linenoiseSetHintsCallback(hints);
 #endif
