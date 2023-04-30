@@ -30,8 +30,8 @@
 #include "time.h"
 
 #ifndef NO_COMPRESSION
-#include "minlzma.h"
-// #include "lzma.h"
+// #include "minlzma.h"
+#include "lzma.h"
 #endif
 
 #ifdef ENABLE_SERVER
@@ -424,24 +424,52 @@ static void load_mem(char* path) {
 	fseek(compressed, 0, SEEK_SET);
 
 	char* compressed_buf = malloc(compressed_len);
-	if (fread(compressed_buf, 1, compressed_len, compressed) != compressed_len) {
+	if ((long)fread(compressed_buf, 1, compressed_len, compressed) != compressed_len) {
 		fprintf(stderr, "error: could not read db file: %s\n", strerror(errno));
 		exit(1);
 	}
 	fclose(compressed);
 
-	char* buf;
+	char* buf = 0;
 #ifndef NO_COMPRESSION
 	{
 		unsigned int magic = *(unsigned int*)compressed_buf;
 		if (magic != *(unsigned int*)"WIKI") {
-			uint32_t len = 0;
-			XzDecode((void*)compressed_buf, compressed_len, NULL, &len);
+			puts("decompressing db file...");
+			lzma_stream strm = LZMA_STREAM_INIT;
+			lzma_ret ret = lzma_stream_decoder(&strm, UINT64_MAX, 0);
+			if (ret != LZMA_OK) {
+				printf("Error: Cannot initialize decoder\n");
+				exit(1);
+			}
 
-			puts("Decompressing data...");
+			char* output_buffer = NULL;
+			size_t output_size = 0;
+			size_t input_pos = 0;
 
-			buf = malloc(len);
-			XzDecode((void*)compressed_buf, compressed_len, (void*)buf, &len);
+			const int LZMA_OUT_BUF_SIZE = 1 << 24;
+
+			do {
+				strm.next_in = (uint8_t*)(compressed_buf + input_pos);
+				strm.avail_in = compressed_len - input_pos;
+
+				output_buffer = (char*)realloc(output_buffer, output_size + LZMA_OUT_BUF_SIZE);
+				strm.next_out = (uint8_t*)(output_buffer + output_size);
+				strm.avail_out = LZMA_OUT_BUF_SIZE;
+
+				ret = lzma_code(&strm, LZMA_RUN);
+				if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
+					printf("Error: Decoding failed: %d\n", ret);
+					exit(1);
+				}
+
+				output_size += LZMA_OUT_BUF_SIZE - strm.avail_out;
+				input_pos += strm.next_in - (uint8_t*)(compressed_buf + input_pos);
+			} while (ret != LZMA_STREAM_END);
+
+			lzma_end(&strm);
+
+			buf = output_buffer;
 			free(compressed_buf);
 		} else {
 #endif
