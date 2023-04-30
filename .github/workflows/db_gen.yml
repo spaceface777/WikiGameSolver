@@ -49,7 +49,7 @@ jobs:
         aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws configure set region auto
         aws configure set output json
-        aws s3 cp ar.bin s3://wiki-dbs/ar.bin --endpoint-url ${{ secrets.R2_AWS_ENDPOINT_URL }}
+        aws s3 cp ${{ matrix.lang }}.bin s3://wiki-dbs/${{ matrix.lang }}.bin --endpoint-url ${{ secrets.R2_AWS_ENDPOINT_URL }}
 
     - name: Upload
       uses: softprops/action-gh-release@v1
