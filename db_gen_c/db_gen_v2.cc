@@ -20,6 +20,7 @@ void nop(void* p) { (void)p; }
 
 map_string_string string_data = new_map_string_string();
 map_string_stringptr link_map = new_map_string_stringptr();
+map_string_string redirects   = new_map_string_string();
 
 static inline string get_string(string s) {
     string* p = map_string_string_get_check(&string_data, s);
@@ -65,7 +66,7 @@ int parse_xml() {
         // Process the current node.
         switch (xmlTextReaderNodeType(reader)) {
             case XML_READER_TYPE_ELEMENT: {
-                xmlChar* tag = xmlTextReaderName(reader);
+                const xmlChar* tag = xmlTextReaderConstName(reader);
 
                 if (!in_page) {
                     if (xmlStrcmp(tag, (const xmlChar*)"page") == 0) in_page = true;
@@ -73,14 +74,13 @@ int parse_xml() {
                 } else {
                     if (xmlStrcmp(tag, (const xmlChar*)"title") == 0) {
                         xmlTextReaderRead(reader);
-                        const xmlChar* title = xmlTextReaderValue(reader);
+                        const xmlChar* title = xmlTextReaderConstValue(reader);
                         page_title = get_string((const char*)title);
-                        xmlFree((void*)title);
                     }
 
-                    if (xmlStrcmp(tag, (const xmlChar*)"text") == 0) {
+                    else if (xmlStrcmp(tag, (const xmlChar*)"text") == 0) {
                         xmlTextReaderRead(reader);
-                        xmlChar* article_ = xmlTextReaderValue(reader);
+                        xmlChar* article_ = (xmlChar*)xmlTextReaderConstValue(reader);
                         std::string_view article = (const char*)article_;
 
                         size_t last_end = 0, start = 0;
@@ -130,23 +130,26 @@ int parse_xml() {
 
                             last_end = end + 2;
                         }
-
-                        xmlFree(article_);
                     }
 
-                    if (xmlStrcmp(tag, (const xmlChar*)"ns") == 0) {
+                    else if (xmlStrcmp(tag, (const xmlChar*)"ns") == 0) {
                         xmlTextReaderRead(reader);
-                        int ns = atoi((const char*)xmlTextReaderValue(reader));
+                        int ns = atoi((const char*)xmlTextReaderConstValue(reader));
                         if (ns != 0) in_page = false;
+                    }
+
+                    else if (xmlStrcmp(tag, (const xmlChar*)"redirect") == 0) {
+                        xmlChar* title = xmlTextReaderGetAttribute(reader, (const xmlChar*)"title");
+                        map_string_string_set(&redirects, page_title, get_string((const char*)title));
+
+                        in_page = false;
                     }
 
                     break;
                 }
-
-                xmlFree(tag);
             }
             case XML_READER_TYPE_END_ELEMENT: {
-                xmlChar* end_tag = xmlTextReaderName(reader);
+                const xmlChar* end_tag = xmlTextReaderConstName(reader);
                 if (in_page && xmlStrcmp(end_tag, (const xmlChar*)"page") == 0) {
                     in_page = false;
 
@@ -379,9 +382,12 @@ int main() {
         PageLinks* l = links + idx;
 
         for (int i = 0; ll[i].p() != nullptr; i++) {
-            int link_idx = bsearch(ll[i].p());
-            if (link_idx == -1) continue;
-            // ll[i].free();
+            int link_idx = bsearch(ll[i]);
+            if (link_idx == -1) {
+                string* redirect = map_string_string_get_check(&redirects, ll[i]);
+                if (redirect != nullptr) link_idx = bsearch(*redirect);
+                if (link_idx == -1) continue;
+            };
 
             if (l->n == l->cap) {
                 l->cap = l->cap * 2 + 1;
