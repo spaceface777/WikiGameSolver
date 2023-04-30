@@ -45,6 +45,12 @@ jobs:
 
         curl -L "https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps$(curl -L https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs.articlesdumprecombine.files|to_entries[0].value.url')" | bzcat | ./gen | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
 
+        aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws configure set region auto
+        aws configure set output json
+        aws s3 cp ar.bin s3://wiki-dbs/ar.bin --endpoint-url ${{ secrets.R2_AWS_ENDPOINT_URL }}
+
     - name: Upload
       uses: softprops/action-gh-release@v1
       with:
