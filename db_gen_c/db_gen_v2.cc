@@ -126,6 +126,9 @@ int parse_xml() {
                                 link = std::string_view(article.data() + start + 2, end - start - 2);
                             }
 
+                            char* hash = (char*)memchr(link.data(), '#', link.size());
+                            if (hash) link = std::string_view(link.data(), hash - link.data());
+
                             links_strs.insert(get_string(link));
 
                             last_end = end + 2;
