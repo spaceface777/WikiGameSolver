@@ -26,7 +26,7 @@ jobs:
       id: setup
       run: |
         sudo apt install -y jq xz-utils libxml2-dev libgc-dev
-        echo "date=$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.enwiki.jobs.articlesdumprecombine.updated | split(" ") | .[0] ')" >> $GITHUB_OUTPUT
+        echo "date=$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0] ')" >> $GITHUB_OUTPUT
 
     - name: Initialize swapfile
       run: |
