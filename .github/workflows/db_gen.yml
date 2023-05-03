@@ -3,7 +3,7 @@ name: Regenerate DB
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 5,24 * *' # run on days 5/24 of each month (dumps start on days 1/20 and take a few days to complete and get mirrored)
+    - cron: '0 4 3,23 * *' # run on days 3/23 of each month (dumps start on days 1/20 and take a few days to complete and get mirrored)
 
 jobs:
   create-updated-wiki-dump:
@@ -26,7 +26,7 @@ jobs:
       id: setup
       run: |
         sudo apt install -y jq xz-utils libxml2-dev libgc-dev
-        echo "date=$(curl -L https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0] ')" >> $GITHUB_OUTPUT
+        echo "date=$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.enwiki.jobs.articlesdumprecombine.updated | split(" ") | .[0] ')" >> $GITHUB_OUTPUT
 
     - name: Initialize swapfile
       run: |
@@ -43,7 +43,7 @@ jobs:
         mv db_gen ../gen
         cd ..
 
-        curl -L "https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps$(curl -L https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs.articlesdumprecombine.files|to_entries[0].value.url')" | bzcat | ./gen | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
+        curl -L "https://saimei.ftp.acc.umu.se/mirror/wikimedia.org/dumps$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs.articlesdumprecombine.files|to_entries[0].value.url')" | bzcat | ./gen | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
 
         aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
