@@ -142,8 +142,13 @@ int parse_xml() {
                     }
 
                     else if (xmlStrcmp(tag, (const xmlChar*)"redirect") == 0) {
-                        xmlChar* title = xmlTextReaderGetAttribute(reader, (const xmlChar*)"title");
-                        map_string_string_set(&redirects, page_title, get_string((const char*)title));
+                        xmlChar* title_ = xmlTextReaderGetAttribute(reader, (const xmlChar*)"title");
+                        string title = (const char*)title_;
+                        char* hash = (char*)memchr(title_, '#', title.len);
+                        if (hash) {
+                            std::cout << "Redirect with hash: " << title << std::endl;
+                        }
+                        map_string_string_set(&redirects, page_title, get_string(title));
 
                         in_page = false;
                     }
@@ -389,7 +394,9 @@ int main() {
             if (link_idx == -1) {
                 string* redirect = map_string_string_get_check(&redirects, ll[i]);
                 if (redirect != nullptr) link_idx = bsearch(*redirect);
-                if (link_idx == -1) continue;
+                if (link_idx == -1) {
+                    std::cout << "Link not found: " << ll[i] << " " << redirect << std::endl;
+                    continue;};
             };
 
             if (l->n == l->cap) {

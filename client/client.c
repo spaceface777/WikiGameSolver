@@ -229,6 +229,8 @@ void threadpool_main(void* ptr) {
 			write(data->connfd, "\n", 1);
 			node = node->next;
 		}
+		// send null byte to signal end of transmission
+		write(data->connfd, "\0", 1);
 		close(data->connfd);
 	}
 
