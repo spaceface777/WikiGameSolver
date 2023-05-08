@@ -525,6 +525,11 @@ static void load_mem(char* path) {
 		link_buf += nr_links;
 		p += sizeof(u16);
 	}
+	int padding_needed = nr_entries % 4;
+    if (padding_needed) {
+        p += sizeof(u16) * (4 - padding_needed);
+    }
+
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &entries[i];
 		if (e->links == 0) continue;
