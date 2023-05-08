@@ -146,7 +146,7 @@ int parse_xml() {
                         string title = (const char*)title_;
                         char* hash = (char*)memchr(title_, '#', title.len);
                         if (hash) {
-                            std::cout << "Redirect with hash: " << title << std::endl;
+                            std::cerr << "Redirect with hash: " << title << std::endl;
                         }
                         map_string_string_set(&redirects, page_title, get_string(title));
 
@@ -404,8 +404,9 @@ int main() {
                 string* redirect = map_string_string_get_check(&redirects, ll[i]);
                 if (redirect != nullptr) link_idx = bsearch(*redirect);
                 if (link_idx == -1) {
-                    std::cout << "Link not found: " << ll[i] << " " << redirect << std::endl;
-                    continue;};
+                    // std::cerr << "Link not found: " << ll[i] << " " << redirect << std::endl;
+                    continue;
+                }
             };
 
             if (l->n == l->cap) {
