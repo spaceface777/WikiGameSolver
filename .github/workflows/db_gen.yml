@@ -43,7 +43,7 @@ jobs:
         mv db_gen ../gen
         cd ..
 
-        curl -L "https://dumps.wikimedia.org/$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs.articlesdumprecombine.files|to_entries[0].value.url')" | bzcat | ./gen | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
+        curl -L "https://dumps.wikimedia.org/$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs | if has(\"articlesdumprecombine\") then .articlesdumprecombine else .articlesdump end | .files | to_entries[0].value.url')" | bzcat | ./gen | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
 
         aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
