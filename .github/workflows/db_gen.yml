@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lang: [en, fr, de, ja, it, ru, es, zh, pl, nl, pt, ar, fi]
+        lang: [en, fr, de, ja, it, ru, es, zh, pl, nl, pt, ar, fi, hu]
 
     name: ${{ matrix.lang }}wiki Dump Gen
     runs-on: ubuntu-latest
@@ -30,7 +30,7 @@ jobs:
 
     - name: Initialize swapfile
       run: |
-        sudo fallocate -l 20G /swapfile
+        sudo fallocate -l 8G /swapfile
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
