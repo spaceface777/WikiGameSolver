@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lang: [en, fr, de, ja, it, ru, es, zh, pl, nl, pt, ar, fi, hu, th]
+        lang: [en, fr, de, ja, it, ru, es, zh, pl, nl, pt, ar, fi, hu, th, he]
 
     name: ${{ matrix.lang }}wiki Dump Gen
     runs-on: ubuntu-latest
