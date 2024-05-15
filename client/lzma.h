@@ -404,7 +404,7 @@
    sched_getaffinity() */
 /* #undef TUKLIB_CPUCORES_SCHED_GETAFFINITY */
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__COSMOPOLITAN__)
 /* Define to 1 if the number of available CPU cores can be detected with
    sysconf(_SC_NPROCESSORS_ONLN) or sysconf(_SC_NPROC_ONLN). */
 #define TUKLIB_CPUCORES_SYSCONF 1

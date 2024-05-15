@@ -2,7 +2,7 @@
 #define ENABLE_PRETTY_INPUT
 #endif
 
-#ifndef __COSMOPOLITAN__
+// #ifndef __COSMOPOLITAN__
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -21,7 +21,7 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #endif
-#endif
+// #endif
 
 #include "util.h"
 #include "array.h"
@@ -594,6 +594,7 @@ static Path find_path(string start, string target) {
 	}
 
 	Path path = (Path){ HEAP((Node){ .data = string_clone(start) }) };
+
 	for (int depth = 0; depth < 12; depth++) {
 		DFSState state = (DFSState){ .depth = 0, .limit = depth, .idx = (start_entry - entries) };
 		if (dfs(start_entry, target, state, path.node))

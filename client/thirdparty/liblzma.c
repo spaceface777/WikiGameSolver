@@ -221,6 +221,7 @@ TUKLIB_DECLS_END
 #ifdef HAVE_SYS_PARAM_H
 #include <sys/param.h>
 #endif
+
 #include <sys/sysctl.h>
 
 #elif defined(TUKLIB_CPUCORES_SYSCONF)
