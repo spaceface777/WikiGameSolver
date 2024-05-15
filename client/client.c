@@ -342,10 +342,12 @@ int main(int argc, char** argv) {
 				continue;
 			}
 
+
 			if ((nread < (int)sizeof(key)) || memcmp(buf, key, sizeof(key)-1) != 0) {
 				puts("received invalid signature");
 				goto err;
 			}
+
 			nread = sizeof(key)-1;
 			buf += sizeof(key)-1;
 
@@ -353,23 +355,39 @@ int main(int argc, char** argv) {
 			int t = 0;
 			if (sscanf(buf, "%d%n", &slen, &t) < 0) goto err;
 			if (slen < 0 || slen > (buf_size>>1)) {
-				fprintf(stderr, "got invalid len\n");
+				fprintf(stderr, "got invalid len A\n");
 				goto err;
 			}
 			nread += t;
 			buf += t;
+
+			if (*buf != ' ') {
+                                puts("received invalid message");
+                                goto err;
+			}
+                        nread++;
+                        buf++;
+
 			string start = string_clone(STR(buf, slen));
 			nread += slen;
 			buf += slen;
 
 			if (sscanf(buf, "%d%n", &slen, &t) < 0) goto err;
 			if (slen < 0 || slen+nread > (buf_size>>1)) {
-				fprintf(stderr, "got invalid len\n");
+				fprintf(stderr, "got invalid len B\n");
 				goto err;
 			}
 
 			nread += t;
 			buf += t;
+
+                        if (*buf != ' ') {
+                                puts("received invalid message");
+                                goto err;
+                        }
+                        nread++;
+                        buf++;
+
 			string target = string_clone(STR(buf, slen));
 			nread += slen;
 			buf += slen;
