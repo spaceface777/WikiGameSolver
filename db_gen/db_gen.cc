@@ -333,19 +333,23 @@ void write_db() {
         }
     }
 
-    char zeros[8] = {0};
-    int padding_needed = page_count % 4;
-    if (padding_needed) {
-        if (fwrite(zeros, 2, 4-padding_needed, f) != 4-padding_needed) {
-            perror("fwrite");
-            exit(1);
-        }
-    }
+    // char zeros[8] = {0};
+    // int padding_needed = page_count % 4;
+    // if (padding_needed) {
+    //     if (fwrite(zeros, 2, 4-padding_needed, f) != 4-padding_needed) {
+    //         perror("fwrite");
+    //         exit(1);
+    //     }
+    // }
 
     for (int i = 0; i < page_count; i++) {
         for (int j = 0; j < links[i].n; j++) {
             int32_t link = links[i].ids[j];
-            if (fwrite(&link, sizeof(link), 1, f) != 1) {
+            char* p = (char*)&link;
+            if (p[3] != 0) {
+                perror("link overflow");
+            }
+            if (fwrite(&link, 3, 1, f) != 1) {
                 perror("fwrite");
                 exit(1);
             }

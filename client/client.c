@@ -1,4 +1,4 @@
-#if !defined(_WIN32) && !defined(ENABLE_SERVER)
+#if !defined(_WIN32) && !defined(ENABLE_SERVER) && !defined(__EMSCRIPTEN__)
 #define ENABLE_PRETTY_INPUT
 #endif
 
@@ -45,23 +45,32 @@
 #endif
 #endif
 
+#ifdef __EMSCRIPTEN__
+#define STATIC
+#else
+#define STATIC static
+#endif
+
 typedef struct Path Path;
 typedef struct Node Node;
 typedef struct Link Link;
 typedef struct Entry Entry;
 
-static void load_mem(char* path);
-static Entry* find_entry(string name);
-static Path find_path(string start, string target);
-static void print_path(Path path);
-static void path_free(Path* head);
+STATIC void load_mem(char* path);
+STATIC void load_mem2(char* compressed_buf, long compressed_len);
+STATIC void load_mem3(char* buf);
+
+STATIC Entry* find_entry(string name);
+STATIC Path find_path(string start, string target);
+STATIC void print_path(Path path);
+STATIC void path_free(Path* head);
 
 typedef struct DFSState {
 	int idx;
 	u8 depth;
 	u8 limit;
 } DFSState;
-static bool dfs(Entry* entry, string target, DFSState state, Node* path);
+STATIC bool dfs(Entry* entry, string target, DFSState state, Node* path);
 
 struct Path {
 	Node* node;
@@ -77,17 +86,17 @@ struct Entry {
 	array  links;
 };
 
-static int nr_entries = 0;
-static Entry* entries;
+STATIC int nr_entries = 0;
+STATIC Entry* entries;
 
 #ifdef ENABLE_SERVER
 _Thread_local
 #endif
-static u8* depths;
+STATIC u8* depths;
 
 #ifdef DEBUG_CACHE
-_Thread_local static int cache_hits = 0;
-_Thread_local static int cache_misses = 0;
+_Thread_local STATIC int cache_hits = 0;
+_Thread_local STATIC int cache_misses = 0;
 #endif
 
 #ifdef ENABLE_PRETTY_INPUT
@@ -174,11 +183,22 @@ char* hints(const char* buf, int* color, int* bold) {
 
 	Entry* first_match = entries + p.start;
 	if ((count == 1) || (STR_LEN(first_match->title) - blen) > 1) {
-		return STR_PTR(first_match->title) + strlen(buf);
+		const char* s = STR_PTR(first_match->title) + strlen(buf);
+		int slen = STR_LEN(first_match->title) - blen;
+		char* new_buf = malloc(slen + 1);
+		memcpy((void*)new_buf, s, slen);
+		new_buf[slen] = '\0';
+		return new_buf;
 	}
 
-	return STR_PTR(entries[p.start+1].title) + strlen(buf);
+	const char* s = STR_PTR(entries[p.start+1].title) + strlen(buf);
+	int slen = STR_LEN(entries[p.start+1].title) - blen;
+	char* new_buf = malloc(slen + 1);
+	memcpy((void*)new_buf, s, slen);
+	new_buf[slen] = '\0';
+	return new_buf;
 }
+
 #endif
 
 void atexit_handler(void) {
@@ -241,6 +261,7 @@ void threadpool_main(void* ptr) {
 }
 #endif
 
+#ifndef __EMSCRIPTEN__
 int main(int argc, char** argv) {
 	TIME_INIT();
 	#ifdef NO_COMPRESSION
@@ -254,6 +275,7 @@ int main(int argc, char** argv) {
 #ifdef ENABLE_PRETTY_INPUT
 		linenoiseSetCompletionCallback(completion);
 		linenoiseSetHintsCallback(hints);
+		linenoiseSetFreeHintsCallback(free);
 #endif
 		depths = calloc(nr_entries, sizeof(u8));
 
@@ -266,7 +288,7 @@ int main(int argc, char** argv) {
 			string start = input(SLIT("enter a starting entry: "));
 			string target = input(SLIT("enter a target entry: "));
 
-			if (start==0 || target==0) break;
+			if (IS_NIL(start) || IS_NIL(target)) break;
 			
 			u64 start_time = get_monotonic_time();
 
@@ -424,9 +446,10 @@ err:
 
 	return 0;
 }
+#endif
 
 #define DUMP_FORMAT_VERSION 1
-static void load_mem(char* path) {
+STATIC void load_mem(char* path) {
 	puts("reading db file into memory...");
 
 	FILE* compressed = fopen(path, "rb");
@@ -446,6 +469,10 @@ static void load_mem(char* path) {
 	}
 	fclose(compressed);
 
+	load_mem2(compressed_buf, compressed_len);
+}
+
+STATIC void load_mem2(char* compressed_buf, long compressed_len) {
 	char* buf = 0;
 #ifndef NO_COMPRESSION
 	{
@@ -493,7 +520,10 @@ static void load_mem(char* path) {
 #ifndef NO_COMPRESSION
 		}
 	}
+	load_mem3(buf);
 #endif
+}
+STATIC void load_mem3(char* buf) {
 	puts("Processing data...");
 
 	char* p = buf;
@@ -516,33 +546,26 @@ static void load_mem(char* path) {
 		}
 		exit(1);
 	}
-	int dump_date = version >> 8;
-	printf("[info] database file date: 20%02d.%02d.%02d\n", dump_date/10000, (dump_date/100)%100, dump_date%100);
-
-	memcpy(&nr_entries, p, sizeof(int));
+	// int32_t dump_date = version >> 8;
+	// printf("[info] database file date: 20%02d.%02d.%02d\n", dump_date/10000, (dump_date/100)%100, dump_date%100);
+	memcpy(&nr_entries, p, sizeof(int32_t));
 	entries = malloc(sizeof(Entry) * nr_entries);
-	p += sizeof(int);
+	p += sizeof(int32_t);
 
-	uint32_t total_links;
-	memcpy(&total_links, p, sizeof(uint32_t));
+	// uint32_t total_links;
 	p += sizeof(uint32_t);
-	u32* link_buf = malloc(sizeof(u32) * total_links);
-
-	uint32_t total_title_bytes;
-	memcpy(&total_title_bytes, p, sizeof(uint32_t));
+	// uint32_t total_title_bytes;
 	p += sizeof(uint32_t);
-	total_title_bytes += nr_entries; // for null terminators
-	char* title_buf = malloc(total_title_bytes);
 
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &entries[i];
 
 		u16 nr_links;
 		memcpy(&nr_links, p, sizeof(u16));
-		e->links = ARR(link_buf, nr_links);
-		link_buf += nr_links;
+		e->links = ARR(0, nr_links);
 		p += sizeof(u16);
 	}
+
 	int padding_needed = nr_entries % 4;
     if (padding_needed) {
         p += sizeof(u16) * (4 - padding_needed);
@@ -550,9 +573,8 @@ static void load_mem(char* path) {
 
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &entries[i];
-		if (e->links == 0) continue;
 		u16 nr_links = ARR_LEN(e->links);
-		memcpy(ARR_PTR(e->links), p, nr_links*sizeof(u32));
+		e->links = ARR(p, nr_links);
 		p += nr_links*sizeof(u32);
 	}
 	for (int i = 0; i < nr_entries; i++) {
@@ -561,25 +583,18 @@ static void load_mem(char* path) {
 		u16 l;
 		memcpy(&l, p, sizeof(u16));
 		p += sizeof(u16);
-		e->title = (void*)(ptrdiff_t)l;
+		e->title = STR(0, l);
 	}
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &entries[i];
 
-		u16 l = (u16)(ptrdiff_t)e->title;
-
-		char* buf = title_buf;
-		memcpy(buf, p, l);
-		buf[l] = '\0';
+		u16 l = STR_LEN(e->title);
+		e->title = STR(p, l);
 		p += l;
-		e->title = ARR(buf, l);
-		title_buf += l + 1;
 	}
-
-	free(buf);
 }
 
-Entry* find_entry(string name) {
+STATIC Entry* find_entry(string name) {
 	const int len = STR_LEN(name);
 	const char* ptr = STR_PTR(name);
 
@@ -590,7 +605,7 @@ Entry* find_entry(string name) {
 
 		const int entry_len = STR_LEN(e->title);
 		const char* entry_ptr = STR_PTR(e->title);
-
+		
 		const int cmp = strncmp(ptr, entry_ptr, MAX(len, entry_len));
         if (cmp == 0) return e;
         else if (cmp > 0) l = m + 1;
@@ -599,7 +614,7 @@ Entry* find_entry(string name) {
 	return null;
 }
 
-static Path find_path(string start, string target) {
+STATIC Path find_path(string start, string target) {
 	Entry* start_entry = find_entry(start);
 	Entry* target_entry = find_entry(target);
 	if (!start_entry) {
@@ -622,7 +637,7 @@ static Path find_path(string start, string target) {
 	return path;
 }
 
-static inline void print_path(Path path) {
+STATIC inline void print_path(Path path) {
 	Node* node = path.node;
 	if (!node) {
 		println(SLIT("\n\nNo path found."));
@@ -637,7 +652,7 @@ static inline void print_path(Path path) {
 	}
 }
 
-static inline void path_free(Path* path) {
+STATIC inline void path_free(Path* path) {
 	Node* tmp;
 	Node* node = path->node;
 	while (node != null) {
@@ -649,7 +664,7 @@ static inline void path_free(Path* path) {
 	path->node = 0;
 }
 
-static bool dfs(Entry* entry, string target, DFSState state, Node* path) {
+STATIC bool dfs(Entry* entry, string target, DFSState state, Node* path) {
 	string node = entry->title;
 	if (string_eq(node, target)) {
 		path->data = node;
@@ -688,6 +703,6 @@ static bool dfs(Entry* entry, string target, DFSState state, Node* path) {
 	return false;
 }
 
-#if UINTPTR_MAX != 0xffffffffffffffff
-#error "This program only supports 64-bit architectures."
+#if UINTPTR_MAX != 0xffffffffffffffff && !defined(__EMSCRIPTEN__)
+#warning "This program is designed for 64-bit architectures."
 #endif

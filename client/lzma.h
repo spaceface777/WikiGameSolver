@@ -109,37 +109,37 @@
 #define HAVE_DLFCN_H 1
 
 /* Define to 1 if any of HAVE_ENCODER_foo have been defined. */
-#define HAVE_ENCODERS 1
+// #define HAVE_ENCODERS 1
 
 /* Define to 1 if arm encoder is enabled. */
-#define HAVE_ENCODER_ARM 1
+// #define HAVE_ENCODER_ARM 1
 
 /* Define to 1 if arm64 encoder is enabled. */
-#define HAVE_ENCODER_ARM64 1
+// #define HAVE_ENCODER_ARM64 1
 
 /* Define to 1 if armthumb encoder is enabled. */
-#define HAVE_ENCODER_ARMTHUMB 1
+// #define HAVE_ENCODER_ARMTHUMB 1
 
 /* Define to 1 if delta encoder is enabled. */
-#define HAVE_ENCODER_DELTA 1
+// #define HAVE_ENCODER_DELTA 1
 
 /* Define to 1 if ia64 encoder is enabled. */
-#define HAVE_ENCODER_IA64 1
+// #define HAVE_ENCODER_IA64 1
 
 /* Define to 1 if lzma1 encoder is enabled. */
-#define HAVE_ENCODER_LZMA1 1
+// #define HAVE_ENCODER_LZMA1 1
 
 /* Define to 1 if lzma2 encoder is enabled. */
-#define HAVE_ENCODER_LZMA2 1
+// #define HAVE_ENCODER_LZMA2 1
 
 /* Define to 1 if powerpc encoder is enabled. */
-#define HAVE_ENCODER_POWERPC 1
+// #define HAVE_ENCODER_POWERPC 1
 
 /* Define to 1 if sparc encoder is enabled. */
-#define HAVE_ENCODER_SPARC 1
+// #define HAVE_ENCODER_SPARC 1
 
 /* Define to 1 if x86 encoder is enabled. */
-#define HAVE_ENCODER_X86 1
+// #define HAVE_ENCODER_X86 1
 
 /* Define to 1 if you have the <fcntl.h> header file. */
 #define HAVE_FCNTL_H 1
@@ -385,7 +385,11 @@
 /* #undef PTHREAD_CREATE_JOINABLE */
 
 /* The size of `size_t', as computed by sizeof. */
+#if UINTPTR_MAX != 0xffffffffffffffff
 #define SIZEOF_SIZE_T 8
+#else
+#define SIZEOF_SIZE_T 4
+#endif
 
 /* Define to 1 if all of the C90 standard headers exist (not just the ones
    required in a freestanding environment). This macro is provided for
@@ -404,7 +408,7 @@
    sched_getaffinity() */
 /* #undef TUKLIB_CPUCORES_SCHED_GETAFFINITY */
 
-#if defined(__linux__) || defined(__COSMOPOLITAN__)
+#if defined(__linux__) || defined(__COSMOPOLITAN__) || defined(__EMSCRIPTEN__)
 /* Define to 1 if the number of available CPU cores can be detected with
    sysconf(_SC_NPROCESSORS_ONLN) or sysconf(_SC_NPROC_ONLN). */
 #define TUKLIB_CPUCORES_SYSCONF 1
@@ -417,7 +421,9 @@
 
 /* Define to 1 if the system supports fast unaligned access to 16-bit, 32-bit,
    and 64-bit integers. */
+// #ifndef __EMSCRIPTEN__
 #define TUKLIB_FAST_UNALIGNED_ACCESS 1
+// #endif
 
 /* Define to 1 if the amount of physical memory can be detected with
    _system_configuration.physmem. */

@@ -1,3 +1,5 @@
+#if UINTPTR_MAX == 0xffffffffffffffff
+
 typedef void* array;
 
 INLINE unsigned short ARR_LEN(array x) {
@@ -34,3 +36,46 @@ INLINE void array_free(array* str) {
 	free(ARR_PTR(*str));
 	*str = 0;
 }
+
+#define IS_NIL(x) (ARR_PTR(x) == 0)
+
+#else
+
+typedef struct {
+	void* ptr;
+	unsigned short len;
+} array;
+
+INLINE unsigned short ARR_LEN(array x) {
+	return x.len;
+}
+
+INLINE void* ARR_PTR(array x) {
+	return x.ptr;
+}
+
+INLINE array ARR(void* ptr, unsigned short len) {
+	return (array){ptr, len};
+}
+
+INLINE bool array_eq(array a, array b) {
+	if (a.len != b.len) return false;
+	return !memcmp(a.ptr, b.ptr, a.len);
+}
+
+INLINE array array_clone(array s) {
+	char* ptr = (char*)malloc(s.len + 1);
+	memcpy(ptr, s.ptr, s.len);
+	ptr[s.len] = 0;
+	return ARR(ptr, s.len);
+}
+
+INLINE void array_free(array* str) {
+	free(str->ptr);
+	str->ptr = 0;
+	str->len = 0;
+}
+
+#define IS_NIL(x) ((x).ptr == 0)
+
+#endif

@@ -34,5 +34,5 @@ INLINE string format_time(u64 ts) {
 	if (ts < second) snprintf(buf, sizeof(buf), "%llums", ts / millisecond);
 	else snprintf(buf, sizeof(buf), "%.1f sec", (f64)ts / second);
 
-	return string_clone(STR(buf, strlen(buf)));
+	return string_clone(STR(buf, (unsigned short)strlen(buf)));
 }

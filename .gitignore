@@ -26,3 +26,5 @@ client/keys.h
 dep/
 .DS_Store
 **/*.dSYM/
+*.js
+*.wasm

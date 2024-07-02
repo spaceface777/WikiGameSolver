@@ -1,3 +1,5 @@
+#if UINTPTR_MAX == 0xffffffffffffffff
+
 typedef char* string;
 
 // create a string literal
@@ -13,6 +15,40 @@ typedef char* string;
 #define string_clone(s) ((string)array_clone((array)(s)))
 
 #define string_free(s) array_free((array*)(s))
+
+#else
+
+typedef struct {
+	const char* ptr;
+	unsigned short len;
+} string;
+
+#define SLIT(x) ((string){"" x, sizeof(x) - 1})
+
+#define STR_LEN(x) ((x).len)
+#define STR_PTR(x) ((x).ptr)
+
+#define STR(x, len) ((string){(x), (unsigned short)(len)})
+
+INLINE bool string_eq(string a, string b) {
+	if (a.len != b.len) return false;
+	return !memcmp(a.ptr, b.ptr, a.len);
+}
+
+INLINE string string_clone(string s) {
+	char* ptr = (char*) malloc(s.len + 1);
+	memcpy(ptr, s.ptr, s.len);
+	ptr[s.len] = 0;
+	return (string){ptr, s.len};
+}
+
+INLINE void string_free(string* str) {
+	free((void*)str->ptr);
+	str->ptr = 0;
+	str->len = 0;
+}
+
+#endif
 
 static void __println_wrapper(int count, ...) {
     va_list args;

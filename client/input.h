@@ -9,7 +9,7 @@ static string input(string prompt) {
 	linenoiseHistoryAdd(res);
 	return STR(res, strlen(res));
 }
-#else
+#elif !defined(__EMSCRIPTEN__)
 #ifdef _WIN32
 int __cdecl write(int _Filehandle,const void *_Buf,unsigned int _MaxCharCount);
 #endif

@@ -464,7 +464,8 @@ void linenoiseAddCompletionN(linenoiseCompletions *lc, const char *str, size_t l
 
     copy = malloc(len+1);
     if (copy == NULL) return;
-    memcpy(copy,str,len+1);
+    memcpy(copy,str,len);
+	copy[len] = '\0';
     cvec = realloc(lc->cvec,sizeof(char*)*(lc->len+1));
     if (cvec == NULL) {
         free(copy);
