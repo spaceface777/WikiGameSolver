@@ -26,7 +26,14 @@ jobs:
       id: setup
       run: |
         sudo apt install -y jq xz-utils libxml2-dev libgc-dev
-        echo "date=$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0] ')" >> $GITHUB_OUTPUT
+        date=$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs.pagelinkstable.updated | split(" ") | .[0]')
+        
+        if [ -z "$date" ]; then
+          echo "Error: date is empty"
+          exit 1
+        fi
+        
+        echo "date=$date" >> $GITHUB_OUTPUT
 
     - name: Initialize swapfile
       run: |
@@ -57,7 +64,7 @@ jobs:
         aws s3 cp ${{ matrix.lang }}.bin s3://wiki-dbs/${{ matrix.lang }}.bin --endpoint-url ${{ secrets.R2_AWS_ENDPOINT_URL }}
 
     - name: Upload
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         files: ${{ matrix.lang }}.bin
         tag_name: ${{ steps.setup.outputs.date }}
