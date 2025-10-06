@@ -22,9 +22,14 @@ jobs:
       run: |
         sudo apt install -y jq xz-utils libxml2-dev libgc-dev
         date=$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs.pagelinkstable.updated | split(" ") | .[0]')
-        
         if [ -z "$date" ]; then
-          echo "Error: date is empty"
+          echo "Error: ${{ matrix.lang }}wiki date is empty"
+          exit 1
+        fi
+
+        date=$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0]')
+        if [ -z "$date" ]; then
+          echo "Error: enwiki date is empty"
           exit 1
         fi
         
