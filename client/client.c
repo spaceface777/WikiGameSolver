@@ -546,8 +546,8 @@ STATIC void load_mem3(char* buf) {
 		}
 		exit(1);
 	}
-	// int32_t dump_date = version >> 8;
-	// printf("[info] database file date: 20%02d.%02d.%02d\n", dump_date/10000, (dump_date/100)%100, dump_date%100);
+	int32_t dump_date = version >> 8;
+	printf("[info] database file date: 20%02d.%02d.%02d\n", dump_date/10000, (dump_date/100)%100, dump_date%100);
 	memcpy(&nr_entries, p, sizeof(int32_t));
 	entries = malloc(sizeof(Entry) * nr_entries);
 	p += sizeof(int32_t);

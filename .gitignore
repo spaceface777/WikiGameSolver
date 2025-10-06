@@ -28,3 +28,9 @@ dep/
 **/*.dSYM/
 *.js
 *.wasm
+*.unc
+*.com
+*.dbg
+*.map
+*.elf
+*.txt

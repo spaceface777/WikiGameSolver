@@ -49,7 +49,7 @@ jobs:
         clang++ -Ofast -flto -march=native -mtune=native -I/usr/include/libxml2 db_gen.cc -o ../gen -std=c++17 -lxml2 -lgc
         cd ..
 
-        curl -L "https://dumps.wikimedia.org/$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs | if has("articlesdumprecombine") then .articlesdumprecombine else .articlesdump end | .files | to_entries[0].value.url')" | bzcat | ./gen | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
+        curl -L "https://dumps.wikimedia.org/$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs | if has("articlesdumprecombine") then .articlesdumprecombine else .articlesdump end | .files | to_entries[0].value.url')" | bzcat | ./gen "${{ steps.setup.outputs.date }}" | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
 
         # if size of file is less than 1KB, something went wrong
         if [ $(stat -c %s "${{ matrix.lang }}.bin") -lt 1024 ]; then

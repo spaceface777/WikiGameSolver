@@ -18,6 +18,9 @@ void nop(void* p) { (void)p; }
 #include "string.h"
 #include "map.h"
 
+static int DUMP_DATE = 221201;
+static const int DUMP_FORMAT_VERSION = 1;
+
 map_string_string string_data = new_map_string_string();
 map_string_stringptr link_map = new_map_string_stringptr();
 map_string_string redirects   = new_map_string_string();
@@ -293,9 +296,7 @@ void write_db() {
         exit(1);
     }
 
-    uint32_t dump_date = 221201;
-    uint8_t format_ver = 1;
-    uint32_t version = dump_date << 8 | format_ver;
+    uint32_t version = (DUMP_DATE << 8) | DUMP_FORMAT_VERSION;
     if (fwrite(&version, sizeof(version), 1, f) != 1) {
         perror("version");
         exit(1);
@@ -349,7 +350,7 @@ void write_db() {
             if (p[3] != 0) {
                 perror("link overflow");
             }
-            if (fwrite(&link, 3, 1, f) != 1) {
+            if (fwrite(&link, 4, 1, f) != 1) {
                 perror("fwrite");
                 exit(1);
             }
@@ -376,7 +377,25 @@ void write_db() {
     GC_free(buf);
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc > 1) {
+        // argv[1] = "YYYY-MM-DD"
+        if (strlen(argv[1]) != 10 || argv[1][4] != '-' || argv[1][7] != '-') {
+            std::cerr << "Invalid date format. Use YYYY-MM-DD." << std::endl;
+            return 1;
+        }
+        int year, month, day;
+        if (sscanf(argv[1], "%4d-%2d-%2d", &year, &month, &day) != 3) {
+            std::cerr << "Invalid date format. Use YYYY-MM-DD." << std::endl;
+            return 1;
+        }
+        if (year < 2000 || year > 2099 || month < 1 || month > 12 || day < 1 || day > 31) {
+            std::cerr << "Invalid date." << std::endl;
+            return 1;
+        }
+        DUMP_DATE = (year - 2000) * 10000 + month * 100 + day;
+    }
+
     GC_INIT();
     xmlMemSetup(GC_free, GC_malloc, GC_realloc, GC_strdup);
 
