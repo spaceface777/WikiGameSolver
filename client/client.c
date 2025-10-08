@@ -606,7 +606,8 @@ STATIC Entry* find_entry(string name) {
 		const int entry_len = STR_LEN(e->title);
 		const char* entry_ptr = STR_PTR(e->title);
 		
-		const int cmp = strncmp(ptr, entry_ptr, MAX(len, entry_len));
+		int cmp = memcmp(ptr, entry_ptr, MIN(len, entry_len));
+		if (cmp == 0) cmp = (len < entry_len) ? -1 : (len > entry_len);
         if (cmp == 0) return e;
         else if (cmp > 0) l = m + 1;
         else if (cmp < 0) r = m - 1;

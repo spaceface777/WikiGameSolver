@@ -449,6 +449,23 @@ int main(int argc, char** argv) {
         if (n == 0) break;
     }
 
+    // remove duplicate links in each page
+    uint64_t duplicates_removed = 0;
+    for (int i = 0; i < page_count; i++) {
+        PageLinks* l = links + i;
+        if (l->n == 0) continue;
+        int j = 0;
+        for (int k = 1; k < l->n; k++) {
+            if (l->ids[k] != l->ids[j]) {
+                l->ids[++j] = l->ids[k];
+            } else {
+                duplicates_removed++;
+            }
+        }
+        l->n = j + 1;
+    }
+    fprintf(stderr, "Removed %llu spurious duplicate links\n", duplicates_removed);
+
     write_db();
 
     return 0;
