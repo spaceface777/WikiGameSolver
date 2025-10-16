@@ -41,6 +41,12 @@ static inline constexpr std::size_t find_in_range(std::string_view sv,
     end = std::min(end, sv.size());
     if (end < start) return std::string_view::npos;
 
+    // optimization: use memchr for single-char needles
+    if (needle.size() == 1) {
+        const char* p = (const char*)memchr(sv.data() + start, needle[0], end - start);
+        return p ? (std::size_t)(p - sv.data()) : std::string_view::npos;
+    }
+
     const auto local = sv.substr(start, end - start).find(needle);
     return (local == std::string_view::npos) ? std::string_view::npos : start + local;
 }
@@ -121,22 +127,18 @@ link_loop:
                                 continue;
                             }
 
-                            // other cases we have to handle:
-                            // 1. <!-- comment -->
-                            // 2. <ref>...</ref> or <ref ...>...</ref> or <ref ... /> or <ref/>
-                            // 3. <nowiki>...</nowiki> or <nowiki ...>...</nowiki> or <nowiki ... /> or <nowiki/>
-
-
-                            size_t comment_start = find_in_range(article, "<!--", last_end, link_start);
-                            if (comment_start != std::string::npos) {
-                                size_t comment_end = find_in_range(article, "-->", comment_start + 4);
-                                if (comment_end == std::string::npos) break;
-                                last_end = comment_end + 3;
-                                continue;
-                            }
-
                             size_t tag_start = find_in_range(article, "<", last_end, link_start);
                             if (tag_start != std::string::npos) {
+                                // strip <!-- comment --> s
+                                size_t comment_start = find_in_range(article, "<!--", last_end, link_start);
+                                if (comment_start != std::string::npos) {
+                                    size_t comment_end = find_in_range(article, "-->", comment_start + 4);
+                                    if (comment_end == std::string::npos) break;
+                                    last_end = comment_end + 3;
+                                    continue;
+                                }
+
+                                // strip <ref> and <nowiki>
                                 size_t tag_end = find_in_range(article, ">", tag_start + 1);
                                 if (tag_end != std::string::npos) {
                                     std::string_view full_opening_tag = std::string_view(article.data() + tag_start + 1, tag_end - tag_start - 1);
@@ -162,12 +164,6 @@ link_loop:
 
                             size_t end = find_in_range(article, "]]", link_start);
                             if (end == std::string::npos) break;
-
-                            // size_t colon_idx = find_in_range(article, ":", link_start, end);
-                            // if (colon_idx != std::string::npos) {
-                            //     last_end = end + 2;
-                            //     continue;
-                            // }
 
                             article_[link_start + 2] = toupper(article_[link_start + 2]);
 
