@@ -33,6 +33,92 @@ static inline string get_string(string s) {
     return s;
 }
 
+static inline bool ieq(char a, char b) {
+    if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+    if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+    return a == b;
+}
+
+static size_t find_ci(const std::string& s, size_t from, const char* needle) {
+    size_t nlen = strlen(needle);
+    for (size_t i = from; i + nlen <= s.size(); ++i) {
+        size_t j = 0;
+        for (; j < nlen; ++j) {
+            if (!ieq(s[i + j], needle[j])) break;
+        }
+        if (j == nlen) return i;
+    }
+    return std::string::npos;
+}
+
+// Skip nested {{ ... }}; returns index *after* the closing "}}", or s.size() if unmatched.
+static size_t skip_template(const std::string& s, size_t open) {
+    size_t pos = open + 2;
+    int depth = 1;
+    while (pos < s.size() && depth > 0) {
+        size_t o = s.find("{{", pos);
+        size_t c = s.find("}}", pos);
+        if (c == std::string::npos) return s.size(); // unmatched -> skip to end
+        if (o != std::string::npos && o < c) {
+            depth++;
+            pos = o + 2;
+        } else {
+            depth--;
+            pos = c + 2;
+        }
+    }
+    return pos;
+}
+
+// Skip <!-- ... --> comments; returns index after "-->", or s.size() if unmatched.
+static size_t skip_comment(const std::string& s, size_t open) {
+    size_t end = s.find("-->", open + 4);
+    return (end == std::string::npos) ? s.size() : end + 3;
+}
+
+// Skip a tag that may have attributes and either a paired or self-closing form.
+// Example tags: <ref ...>...</ref>, <ref .../>, <nowiki>...</nowiki>
+// Returns index after the closing tag (or "/>"), or s.size() if unmatched.
+static size_t skip_tag_pair_or_selfclose(const std::string& s, size_t lt_pos, const char* tagname) {
+    // Find the end of the start tag: '>'
+    size_t gt = s.find('>', lt_pos + 1);
+    if (gt == std::string::npos) return s.size();
+
+    // If it’s self-closing like <ref .../>, skip just that.
+    if (gt > lt_pos + 1 && s[gt - 1] == '/') return gt + 1;
+
+    // Otherwise, find the closing tag </tagname>
+    std::string endtag = std::string("</") + tagname + ">";
+    size_t close = find_ci(s, gt + 1, endtag.c_str());
+    return (close == std::string::npos) ? s.size() : (close + endtag.size());
+}
+
+// Returns true if we skipped something and advanced last_end.
+static bool maybe_skip_skippable(const std::string& s, size_t& last_end, size_t next_link_pos) {
+    // Look for the earliest skippable opener between last_end and next_link_pos.
+    size_t tmpl = s.find("{{", last_end);
+    size_t cmt  = s.find("<!--", last_end);
+    size_t ref  = find_ci(s, last_end, "<ref");
+    size_t nwk  = find_ci(s, last_end, "<nowiki");
+
+    auto minpos = [&](size_t a, size_t b){ return (a == std::string::npos) ? b : ((b == std::string::npos) ? a : std::min(a,b)); };
+    size_t earliest = minpos(minpos(tmpl, cmt), minpos(ref, nwk));
+
+    if (earliest != std::string::npos && (next_link_pos == std::string::npos || earliest < next_link_pos)) {
+        size_t after = earliest;
+        if (earliest == tmpl)      after = skip_template(s, earliest);
+        else if (earliest == cmt)  after = skip_comment(s, earliest);
+        else if (earliest == ref)  after = skip_tag_pair_or_selfclose(s, earliest, "ref");
+        else if (earliest == nwk)  after = skip_tag_pair_or_selfclose(s, earliest, "nowiki");
+
+        // Guard against no progress
+        if (after <= earliest) after = earliest + 1;
+        last_end = after;
+        return true;
+    }
+    return false;
+}
+
 int parse_xml() {
     xmlParserCtxtPtr parser_context = xmlNewParserCtxt();
     if (!parser_context) {
@@ -83,56 +169,40 @@ int parse_xml() {
 
                     else if (xmlStrcmp(tag, (const xmlChar*)"text") == 0) {
                         xmlTextReaderRead(reader);
-                        xmlChar* article_ = (xmlChar*)xmlTextReaderConstValue(reader);
-                        std::string_view article = (const char*)article_;
+                        const xmlChar* v = xmlTextReaderConstValue(reader);
+                        if (!v) break;
+                        std::string article(reinterpret_cast<const char*>(v));  // safe, we won't mutate libxml's buffer
 
-                        size_t last_end = 0, start = 0;
-                        while ((start = article.find("[[", last_end)) != std::string::npos) {
-                            size_t infoStart = article.find("{{", last_end);
-                            if (infoStart != std::string::npos && infoStart < start) {
-                                size_t infoEnd = infoStart + 2;
-                                int n = 1;
-                                while (n > 0) {
-                                    size_t nextOpen = article.find("{{", infoEnd);
-                                    size_t nextClose = article.find("}}", infoEnd);
-                                    if (nextClose == std::string::npos) break;
-                                    if (nextOpen < nextClose) {
-                                        n++;
-                                        infoEnd = nextOpen + 2;
-                                    } else {
-                                        n--;
-                                        infoEnd = nextClose + 2;
-                                    }
-                                }
-                                last_end = infoEnd;
-                                continue;
-                            }
+                        size_t last_end = 0;
 
-                            size_t end = article.find("]]", start);
+                        while (true) {
+                            size_t start = article.find("[[", last_end);
+
+                            // If a skippable block begins before the next link, skip it and restart.
+                            if (maybe_skip_skippable(article, last_end, start)) continue;
+                            if (start == std::string::npos) break;
+
+                            size_t end = article.find("]]", start + 2);
                             if (end == std::string::npos) break;
 
-                            char* colon = (char*)memchr(article.data() + start, ':', end - start);
-                            if (colon) {
-                                last_end = end + 2;
-                                continue;
+                            // Determine the 'target' segment limits (before '|' and before '#')
+                            size_t pipe = article.find('|', start + 2);
+                            if (pipe == std::string::npos || pipe > end) pipe = end;
+                            size_t hash = article.find('#', start + 2);
+                            if (hash == std::string::npos || hash > pipe) hash = pipe;
+
+                            // // (9) Namespace colon check only within the *target* segment (start+2 .. pipe/hash)
+                            // size_t colon = article.find(':', start + 2);
+                            // if (colon != std::string::npos && colon < pipe) {
+                            //     last_end = end + 2;
+                            //     continue; // skip namespaced links like File:, Category:, etc.
+                            // }
+
+                            // Extract link target
+                            std::string_view link(article.data() + start + 2, hash - (start + 2));
+                            if (!link.empty()) {
+                                links_strs.insert(get_string(link));
                             }
-
-                            article_[start + 2] = toupper(article_[start + 2]);
-
-                            std::string_view link = "";
-
-                            char* pipe = (char*)memchr(article.data() + start, '|', end - start);
-                            if (pipe) {
-                                size_t pipe_idx = pipe - article.data();
-                                link = std::string_view(article.data() + start + 2, pipe_idx - start - 2);
-                            } else {
-                                link = std::string_view(article.data() + start + 2, end - start - 2);
-                            }
-
-                            char* hash = (char*)memchr(link.data(), '#', link.size());
-                            if (hash) link = std::string_view(link.data(), hash - link.data());
-
-                            links_strs.insert(get_string(link));
 
                             last_end = end + 2;
                         }
@@ -253,6 +323,7 @@ int trim_empty_pages() {
     int l = page_count - empty_pages.size();
     string* titles_ = (string*)GC_malloc(l * sizeof(string));
     PageLinks* links_ = (PageLinks*)GC_malloc(l * sizeof(PageLinks));
+    memset(links_, 0, l * sizeof(PageLinks));
     int titles_len = 0;
     int links_len = 0;
 
@@ -377,6 +448,32 @@ void write_db() {
     GC_free(buf);
 }
 
+static const int MAX_REDIRECT_HOPS = 128;
+
+int resolve_link_id(const string& t) {
+    // Follow: t -> redirects[t] -> redirects[...] ... until a real page is found
+    // Stops on: page found, no redirect, cycle, or hop cap.
+    std::set<string> seen;
+    string cur = t;
+
+    for (int hop = 0; hop < MAX_REDIRECT_HOPS; ++hop) {
+        // If this title exists as a real page, we’re done.
+        int id = bsearch(cur);
+        if (id != -1) return id;
+
+        // Otherwise try to follow a redirect.
+        string* p = map_string_string_get_check(&redirects, cur);
+        if (!p) return -1;            // no redirect and not a real page → missing
+
+        // Cycle guard
+        if (!seen.insert(cur).second) return -1;
+
+        cur = *p;                     // follow to next hop
+    }
+    // Too many hops → treat as invalid to avoid pathological chains
+    return -1;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
         // argv[1] = "YYYY-MM-DD"
@@ -403,6 +500,7 @@ int main(int argc, char** argv) {
 
     titles = (string*)GC_malloc(page_count * sizeof(string));
     links = (PageLinks*)GC_malloc(page_count * sizeof(PageLinks));
+    memset(links, 0, page_count * sizeof(PageLinks));
 
     {
         int i = 0;
@@ -422,15 +520,8 @@ int main(int argc, char** argv) {
         PageLinks* l = links + idx;
 
         for (int i = 0; ll[i].p() != nullptr; i++) {
-            int link_idx = bsearch(ll[i]);
-            if (link_idx == -1) {
-                string* redirect = map_string_string_get_check(&redirects, ll[i]);
-                if (redirect != nullptr) link_idx = bsearch(*redirect);
-                if (link_idx == -1) {
-                    // std::cerr << "Link not found: " << ll[i] << " " << redirect << std::endl;
-                    continue;
-                }
-            };
+            int link_idx = resolve_link_id(ll[i]);
+            if (link_idx == -1) continue;
 
             if (l->n == l->cap) {
                 l->cap = l->cap * 2 + 1;
