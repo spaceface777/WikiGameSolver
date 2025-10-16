@@ -200,12 +200,10 @@ linkLoopEnd:
                     }
 
                     else if (xmlStrcmp(tag, (const xmlChar*)"redirect") == 0) {
-                        xmlChar* title_ = xmlTextReaderGetAttribute(reader, (const xmlChar*)"title");
-                        string title = (const char*)title_;
+                        const char* title_ = (const char*)xmlTextReaderGetAttribute(reader, (const xmlChar*)"title");
+                        string title = title_;
                         char* hash = (char*)memchr(title_, '#', title.len);
-                        if (hash) {
-                            title = std::string_view(title_, hash - title_);
-                        }
+                        if (hash) title = std::string_view(title_, hash - title_);
                         map_string_string_set(&redirects, page_title, get_string(title));
 
                         in_page = false;
