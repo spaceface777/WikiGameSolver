@@ -103,7 +103,6 @@ link_loop:
                         while ((link_start = find_in_range(article, "[[", last_end)) != std::string::npos) {
                             size_t info_start = find_in_range(article, "{{", last_end, link_start);
                             if (info_start != std::string::npos) {
-                                info_start += last_end;
                                 size_t infoEnd = info_start + 2;
                                 int n = 1;
                                 while (n > 0) {
