@@ -34,3 +34,7 @@ dep/
 *.map
 *.elf
 *.txt
+*.xz
+.vscode/
+.idea/
+*.log

@@ -1,30 +1,30 @@
-#define nanosecond (1ull)
+#define nanosecond	(1ull)
 #define microsecond (1000ull * nanosecond)
 #define millisecond (1000ull * microsecond)
-#define second (1000ull * millisecond)
-
+#define second		(1000ull * millisecond)
 
 #ifdef _WIN32
 LARGE_INTEGER __freq;
 
-#define TIME_INIT() do { \
-	QueryPerformanceFrequency(&__freq); \
-} while(0)
+#define TIME_INIT()                         \
+	do {                                    \
+		QueryPerformanceFrequency(&__freq); \
+	} while (0)
 #else
 #define TIME_INIT()
 #endif
 
 INLINE u64 get_monotonic_time() {
-	#ifdef _WIN32
-		LARGE_INTEGER t;
-		QueryPerformanceCounter(&t);
+#ifdef _WIN32
+	LARGE_INTEGER t;
+	QueryPerformanceCounter(&t);
 
-		return t.QuadPart * second / __freq.QuadPart;
-	#else
-		struct timespec t;
-		clock_gettime(CLOCK_MONOTONIC, &t);
-		return (u64)t.tv_sec * second + t.tv_nsec;
-	#endif
+	return t.QuadPart * second / __freq.QuadPart;
+#else
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (u64)t.tv_sec * second + t.tv_nsec;
+#endif
 }
 
 INLINE string format_time(u64 ts) {

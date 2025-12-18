@@ -139,19 +139,23 @@ link_loop:
                                     continue;
                                 }
 
-                                // strip <ref> and <nowiki>
+                                // strip <ref>, <nowiki>, <gallery>, etc. tags
                                 size_t tag_end = find_in_range(article, ">", tag_start + 1);
                                 if (tag_end != std::string::npos) {
                                     std::string_view full_opening_tag = std::string_view(article.data() + tag_start + 1, tag_end - tag_start - 1);
                                     size_t space_idx = find_in_range(full_opening_tag, " ");
                                     std::string_view tag_name = space_idx == std::string::npos ? full_opening_tag : full_opening_tag.substr(0, space_idx);
-                                    if (tag_name == "ref" || tag_name == "nowiki") {
+                                    if (tag_name == "ref" || tag_name == "nowiki" || tag_name == "gallery") {
                                         if (full_opening_tag.size() > 0 && full_opening_tag.back() == '/') {
                                             // self-closing tag 
                                             last_end = tag_end + 1;
                                             continue;
                                         }
-                                        std::string_view closing_tag = tag_name == "ref" ? "</ref>" : "</nowiki>";
+                                        char closing_tag_buf[tag_name.size() + 3];
+                                        closing_tag_buf[0] = '<'; closing_tag_buf[1] = '/';
+                                        memcpy(closing_tag_buf + 2, tag_name.data(), tag_name.size());
+                                        closing_tag_buf[tag_name.size() + 2] = '>';
+                                        std::string_view closing_tag = std::string_view(closing_tag_buf, tag_name.size() + 3);
                                         size_t closing_tag_start = find_in_range(article, closing_tag, tag_end + 1);
                                         if (closing_tag_start != std::string::npos) {
                                             last_end = closing_tag_start + closing_tag.size();

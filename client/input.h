@@ -11,14 +11,14 @@ static string input(string prompt) {
 }
 #elif !defined(__EMSCRIPTEN__)
 #ifdef _WIN32
-int __cdecl write(int _Filehandle,const void *_Buf,unsigned int _MaxCharCount);
+int __cdecl write(int _Filehandle, const void* _Buf, unsigned int _MaxCharCount);
 #endif
 static string input(string prompt) {
 	char buf[1024];
-	while(1) {
+	while (1) {
 		write(1, STR_PTR(prompt), STR_LEN(prompt));
 
-		if (fgets (&buf[0], sizeof(buf), stdin) == null) {
+		if (fgets(&buf[0], sizeof(buf), stdin) == null) {
 			puts("invalid input, please try again");
 			continue;
 		}

@@ -3,7 +3,7 @@
 typedef char* string;
 
 // create a string literal
-#define SLIT(x) ((string)((uintptr_t)""x | ((uintptr_t)(sizeof(x) - 1)<<48)))
+#define SLIT(x) ((string)((uintptr_t)"" x | ((uintptr_t)(sizeof(x) - 1) << 48)))
 
 #define STR_LEN(x) (ARR_LEN((array)(x)))
 #define STR_PTR(x) ((string)ARR_PTR((array)(x)))
@@ -19,7 +19,7 @@ typedef char* string;
 #else
 
 typedef struct {
-	const char* ptr;
+	const char*	   ptr;
 	unsigned short len;
 } string;
 
@@ -36,7 +36,7 @@ INLINE bool string_eq(string a, string b) {
 }
 
 INLINE string string_clone(string s) {
-	char* ptr = (char*) malloc(s.len + 1);
+	char* ptr = (char*)malloc(s.len + 1);
 	memcpy(ptr, s.ptr, s.len);
 	ptr[s.len] = 0;
 	return (string){ptr, s.len};
@@ -51,15 +51,15 @@ INLINE void string_free(string* str) {
 #endif
 
 static void __println_wrapper(int count, ...) {
-    va_list args;
-    va_start(args, count);
-    for (int i = 0; i < count - 1; i++) {
-        string x = va_arg(args, string);
-        printf("%.*s ", STR_LEN(x), STR_PTR(x));
-    }
-    string x = va_arg(args, string);
-    printf("%.*s", STR_LEN(x), STR_PTR(x));
-    puts("");
+	va_list args;
+	va_start(args, count);
+	for (int i = 0; i < count - 1; i++) {
+		string x = va_arg(args, string);
+		printf("%.*s ", STR_LEN(x), STR_PTR(x));
+	}
+	string x = va_arg(args, string);
+	printf("%.*s", STR_LEN(x), STR_PTR(x));
+	puts("");
 }
 
 #define println(...) __println_wrapper(VA_LENGTH(__VA_ARGS__), __VA_ARGS__)

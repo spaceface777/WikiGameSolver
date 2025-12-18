@@ -1,0 +1,64 @@
+# DuckStyle Clang
+BasedOnStyle: llvm
+
+# Indentation
+UseTab: Always
+IndentWidth: 4
+TabWidth: 4
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: false
+  AfterEnum: false
+  AfterExternBlock: false
+  AfterFunction: false
+  AfterNamespace: true
+  AfterObjCDeclaration: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: false
+  BeforeElse: false
+  BeforeLambdaBody: false
+  BeforeWhile: false
+  AfterControlStatement: Never
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyNamespace: false
+  SplitEmptyRecord: false
+AllowShortFunctionsOnASingleLine: false
+
+# Columns
+ColumnLimit: 120
+
+# Alignment
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+AlignConsecutiveMacros: true
+AlignEscapedNewlinesLeft: true
+AlignOperands: true
+AlignTrailingComments: true
+
+AlignConsecutiveShortCaseStatements:
+  Enabled: true
+  AcrossEmptyLines: true
+  AcrossComments: true
+  AlignCaseColons: false
+
+# Namespaces
+NamespaceIndentation: All
+FixNamespaceComments: true
+
+# Access modifiers
+EmptyLineAfterAccessModifier: Leave
+EmptyLineBeforeAccessModifier: LogicalBlock
+IndentAccessModifiers: false
+AccessModifierOffset: -4
+
+# Multi-clause control logic
+IndentCaseLabels: false
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+
+# Pointers
+PointerAlignment: Left
