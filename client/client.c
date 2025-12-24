@@ -278,8 +278,6 @@ int main(int argc, char** argv) {
 	const char* path = "db.bin";
 #endif
 
-	if (argc >= 2) path = argv[1];
-
 	TIME_INIT();
 	load_mem(path);
 	atexit(atexit_handler);
