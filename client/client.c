@@ -23,11 +23,13 @@
 #endif
 // #endif
 
-#include "array.h"
-#include "input.h"
-#include "string.h"
-#include "time.h"
 #include "util.h"
+
+#include "array.h"
+#include "string.h"
+
+#include "input.h"
+#include "time.h"
 
 #ifndef NO_COMPRESSION
 // #include "minlzma.h"
@@ -45,6 +47,8 @@
 #endif
 #endif
 
+#define MAX_DEPTH 20
+
 #ifdef __EMSCRIPTEN__
 #define STATIC
 #else
@@ -56,21 +60,17 @@ typedef struct Node	 Node;
 typedef struct Link	 Link;
 typedef struct Entry Entry;
 
-STATIC void load_mem(char* path);
+STATIC void load_mem(const char* path);
 STATIC void load_mem2(char* compressed_buf, long compressed_len);
 STATIC void load_mem3(char* buf);
 
 STATIC Entry* find_entry(string name);
 STATIC Path	  find_path(string start, string target);
+STATIC Path	  path_from_ids(const u32* ids, u32 len);
+STATIC void	  build_reverse_csr(u32 N);
+STATIC Path	  find_paths_bikpaths(string start, string target, u32 max_depth_u32, u32 max_paths);
 STATIC void	  print_path(Path path);
 STATIC void	  path_free(Path* head);
-
-typedef struct DFSState {
-	int idx;
-	u8	depth;
-	u8	limit;
-} DFSState;
-STATIC bool dfs(Entry* entry, string target, DFSState state, Node* path);
 
 struct Path {
 	Node* node;
@@ -86,18 +86,28 @@ struct Entry {
 	array  links;
 };
 
-STATIC int	  nr_entries = 0;
+STATIC u32	  total_links = 0;
+STATIC int	  nr_entries  = 0;
 STATIC Entry* entries;
 
-#ifdef ENABLE_SERVER
-_Thread_local
-#endif
-	STATIC u8* depths;
+// --- Reverse CSR (incoming edges) -------------------------------------------
+STATIC u32* in_offsets = NULL; // size N+1
+STATIC u32* in_edges   = NULL; // size total_links
+STATIC bool rev_inited = false;
 
-#ifdef DEBUG_CACHE
-_Thread_local STATIC int cache_hits	  = 0;
-_Thread_local STATIC int cache_misses = 0;
+#ifdef ENABLE_SERVER
+#define MAYBE_THREAD_LOCAL _Thread_local
+#else
+#define MAYBE_THREAD_LOCAL
 #endif
+
+// --- Shortest-path primitives used by bikpaths ------------------------------
+MAYBE_THREAD_LOCAL STATIC u8*  sp_ds = NULL;
+MAYBE_THREAD_LOCAL STATIC u32* sp_qs = NULL;
+MAYBE_THREAD_LOCAL STATIC u8*  mp_df = NULL;
+MAYBE_THREAD_LOCAL STATIC u8*  mp_db = NULL;
+MAYBE_THREAD_LOCAL STATIC u32* mp_qf = NULL;
+MAYBE_THREAD_LOCAL STATIC u32* mp_qb = NULL;
 
 #ifdef ENABLE_PRETTY_INPUT
 typedef struct Range {
@@ -221,12 +231,8 @@ _Atomic int nr_jobs = 0;
 
 void* thread_main(void* ptr) {
 	ThreadData* data = (ThreadData*)ptr;
-	depths			 = calloc(nr_entries, sizeof(u8));
-
-	Path path  = find_path(data->start, data->target);
-	data->path = path;
-
-	free(depths);
+	Path		path = find_path(data->start, data->target);
+	data->path		 = path;
 
 	return 0;
 }
@@ -265,13 +271,19 @@ void threadpool_main(void* ptr) {
 
 #ifndef __EMSCRIPTEN__
 int main(int argc, char** argv) {
-	TIME_INIT();
 #ifdef NO_COMPRESSION
-	load_mem("db.unc");
+	const char* path = "db.unc";
 #else
-	load_mem("db.bin");
+	const char* path = "db.bin";
 #endif
+
+	if (argc >= 2) path = argv[1];
+
+	TIME_INIT();
+	load_mem(path);
 	atexit(atexit_handler);
+	// Build reverse CSR once on the main thread (avoids races in server mode).
+	build_reverse_csr((u32)nr_entries);
 
 	if (argc < 3) {
 #ifdef ENABLE_PRETTY_INPUT
@@ -279,12 +291,7 @@ int main(int argc, char** argv) {
 		linenoiseSetHintsCallback(hints);
 		linenoiseSetFreeHintsCallback(free);
 #endif
-		depths = calloc(nr_entries, sizeof(u8));
-
 		while (1) {
-#ifdef DEBUG_CACHE
-			cache_hits = cache_misses = 0;
-#endif
 			putchar('\n');
 			putchar('\n');
 			string start  = input(SLIT("enter a starting entry: "));
@@ -305,13 +312,6 @@ int main(int argc, char** argv) {
 			path_free(&path);
 			string_free(&start);
 			string_free(&target);
-
-#ifdef DEBUG_CACHE
-			printf("%dh | %dm = %.1f%% \n\n", cache_hits, cache_misses,
-				   (double)cache_hits / (cache_hits + cache_misses) * 100);
-#endif
-
-			memset(depths, 0, nr_entries);
 		}
 #ifdef ENABLE_SERVER
 	} else if (argc == 3 && (strcmp(argv[1], "-l") == 0 || strcmp(argv[1], "--listen") == 0)) {
@@ -434,8 +434,6 @@ int main(int argc, char** argv) {
 		}
 #endif
 	} else {
-		depths = calloc(nr_entries, sizeof(u8));
-
 		string start  = string_clone(STR(argv[1], strlen(argv[1])));
 		string target = string_clone(STR(argv[2], strlen(argv[2])));
 
@@ -452,7 +450,7 @@ int main(int argc, char** argv) {
 #endif
 
 #define DUMP_FORMAT_VERSION 1
-STATIC void load_mem(char* path) {
+STATIC void load_mem(const char* path) {
 	puts("reading db file into memory...");
 
 	FILE* compressed = fopen(path, "rb");
@@ -549,17 +547,17 @@ STATIC void load_mem3(char* buf) {
 		}
 		exit(1);
 	}
-	int32_t dump_date = version >> 8;
+	i32 dump_date = version >> 8;
 	printf("[info] database file date: 20%02d.%02d.%02d\n", dump_date / 10000, (dump_date / 100) % 100,
 		   dump_date % 100);
-	memcpy(&nr_entries, p, sizeof(int32_t));
+	memcpy(&nr_entries, p, sizeof(i32));
 	entries = malloc(sizeof(Entry) * nr_entries);
-	p += sizeof(int32_t);
+	p += sizeof(i32);
 
-	// uint32_t total_links;
-	p += sizeof(uint32_t);
-	// uint32_t total_title_bytes;
-	p += sizeof(uint32_t);
+	memcpy(&total_links, p, sizeof(u32));
+	p += sizeof(u32);
+	// u32 total_title_bytes;
+	p += sizeof(u32);
 
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &entries[i];
@@ -619,6 +617,327 @@ STATIC Entry* find_entry(string name) {
 	return null;
 }
 
+STATIC Path path_from_ids(const u32* ids, u32 len) {
+	if (!ids || len == 0) return (Path){0};
+
+	Node* head = NULL;
+	Node* cur  = NULL;
+
+	for (u32 i = 0; i < len; i++) {
+		Node* n = (Node*)calloc(1, sizeof(Node));
+		if (!n) {
+			fprintf(stderr, "error: out of memory building path\n");
+			exit(1);
+		}
+		if (ids[i] >= (u32)nr_entries) {
+			fprintf(stderr, "error: invalid node id %u in path\n", ids[i]);
+			exit(1);
+		}
+		n->data = string_clone(entries[ids[i]].title);
+
+		if (!head) head = n;
+		else cur->next = n;
+		cur = n;
+	}
+
+	return (Path){.node = head};
+}
+
+STATIC void build_reverse_csr(u32 N) {
+	if (rev_inited) return;
+	if (total_links == 0) {
+		fprintf(stderr, "error: total_links missing from db header\n");
+		exit(1);
+	}
+
+	in_offsets = (u32*)calloc((size_t)N + 1u, sizeof(u32));
+	in_edges   = (u32*)malloc((size_t)total_links * sizeof(u32));
+	if (!in_offsets || !in_edges) {
+		fprintf(stderr, "error: out of memory building reverse CSR\n");
+		exit(1);
+	}
+
+	for (u32 src = 0; src < N; src++) {
+		u16	 outdeg = ARR_LEN(entries[src].links);
+		u32* L		= (u32*)ARR_PTR(entries[src].links);
+		for (u16 j = 0; j < outdeg; j++) {
+			u32 dst = L[j];
+			if (dst < N) in_offsets[dst + 1]++;
+		}
+	}
+
+	for (u32 i = 1; i <= N; i++) {
+		in_offsets[i] += in_offsets[i - 1];
+	}
+
+	u32* cur = (u32*)malloc(((size_t)N + 1u) * sizeof(u32));
+	if (!cur) {
+		fprintf(stderr, "error: out of memory\n");
+		exit(1);
+	}
+	memcpy(cur, in_offsets, ((size_t)N + 1u) * sizeof(u32));
+
+	for (u32 src = 0; src < N; src++) {
+		u16	 outdeg = ARR_LEN(entries[src].links);
+		u32* L		= (u32*)ARR_PTR(entries[src].links);
+		for (u16 j = 0; j < outdeg; j++) {
+			u32 dst = L[j];
+			if (dst >= N) continue;
+			u32 pos		  = cur[dst]++;
+			in_edges[pos] = src;
+		}
+	}
+
+	free(cur);
+	rev_inited = true;
+}
+
+STATIC void sp_init(u32 N) {
+	if (!sp_ds) {
+		sp_ds = (u8*)malloc((size_t)N * sizeof(u8));
+		if (!sp_ds) {
+			fprintf(stderr, "error: out of memory initializing sp_ds\n");
+			exit(1);
+		}
+		memset(sp_ds, 0xFF, (size_t)N);
+	}
+	if (!sp_qs) {
+		sp_qs = (u32*)malloc((size_t)N * sizeof(u32));
+		if (!sp_qs) {
+			fprintf(stderr, "error: out of memory initializing sp_qs\n");
+			exit(1);
+		}
+	}
+}
+
+STATIC u8 sp_bfs_ds(u32 s, u32 t, u8 max_depth, u32* out_vis) {
+	u32 head = 0, tail = 0;
+	sp_qs[tail++] = s;
+	sp_ds[s]	  = 0;
+
+	while (head < tail) {
+		u32 v  = sp_qs[head++];
+		u8	dv = sp_ds[v];
+		if (v == t) break;
+		if (dv >= max_depth) continue;
+
+		u16	 outdeg = ARR_LEN(entries[v].links);
+		u32* L		= (u32*)ARR_PTR(entries[v].links);
+		for (u16 j = 0; j < outdeg; j++) {
+			u32 u = L[j];
+			if (sp_ds[u] != 0xFF) continue;
+			sp_ds[u]	  = (u8)(dv + 1);
+			sp_qs[tail++] = u;
+			if (u == t) {
+				head = tail;
+				break;
+			}
+		}
+	}
+
+	if (out_vis) *out_vis = tail;
+	return sp_ds[t];
+}
+
+STATIC void sp_reset_ds(u32 vis) {
+	for (u32 i = 0; i < vis; i++) sp_ds[sp_qs[i]] = 0xFF;
+}
+
+STATIC void mp_init(u32 N) {
+	if (!mp_df) {
+		mp_df = (u8*)malloc((size_t)N * sizeof(u8));
+		if (!mp_df) {
+			fprintf(stderr, "error: out of memory initializing mp_df\n");
+			exit(1);
+		}
+		memset(mp_df, 0xFF, (size_t)N);
+	}
+	if (!mp_db) {
+		mp_db = (u8*)malloc((size_t)N * sizeof(u8));
+		if (!mp_db) {
+			fprintf(stderr, "error: out of memory initializing mp_db\n");
+			exit(1);
+		}
+		memset(mp_db, 0xFF, (size_t)N);
+	}
+	if (!mp_qf) {
+		mp_qf = (u32*)malloc((size_t)N * sizeof(u32));
+		if (!mp_qf) {
+			fprintf(stderr, "error: out of memory initializing mp_qf\n");
+			exit(1);
+		}
+	}
+	if (!mp_qb) {
+		mp_qb = (u32*)malloc((size_t)N * sizeof(u32));
+		if (!mp_qb) {
+			fprintf(stderr, "error: out of memory initializing mp_qb\n");
+			exit(1);
+		}
+	}
+}
+
+STATIC u32 mp_bfs_prefix(u32 s, u8 split) {
+	u32 head = 0, tail = 0;
+	mp_qf[tail++] = s;
+	mp_df[s]	  = 0;
+
+	while (head < tail) {
+		u32 u  = mp_qf[head++];
+		u8	du = mp_df[u];
+		if (du >= split) continue;
+		u16	 outdeg = ARR_LEN(entries[u].links);
+		u32* L		= (u32*)ARR_PTR(entries[u].links);
+		for (u16 j = 0; j < outdeg; j++) {
+			u32 v = L[j];
+			if (mp_df[v] != 0xFF) continue;
+			mp_df[v]	  = (u8)(du + 1);
+			mp_qf[tail++] = v;
+		}
+	}
+	return tail;
+}
+
+STATIC u32 mp_rbfs_suffix(u32 t, u8 suffix) {
+	u32 head = 0, tail = 0;
+	mp_qb[tail++] = t;
+	mp_db[t]	  = 0;
+
+	while (head < tail) {
+		u32 v  = mp_qb[head++];
+		u8	dv = mp_db[v];
+		if (dv >= suffix) continue;
+
+		u32 beg = in_offsets[v];
+		u32 end = in_offsets[v + 1];
+		for (u32 pos = beg; pos < end; pos++) {
+			u32 pred = in_edges[pos];
+			if (mp_db[pred] != 0xFF) continue;
+			mp_db[pred]	  = (u8)(dv + 1);
+			mp_qb[tail++] = pred;
+		}
+	}
+	return tail;
+}
+
+STATIC void mp_reset_df(u32 vis) {
+	for (u32 i = 0; i < vis; i++) mp_df[mp_qf[i]] = 0xFF;
+}
+
+STATIC void mp_reset_db(u32 vis) {
+	for (u32 i = 0; i < vis; i++) mp_db[mp_qb[i]] = 0xFF;
+}
+
+typedef struct {
+	u32	 s, t;
+	u8	 D, split, suffix;
+	u32	 max_paths;
+	u32	 npaths;
+	Path first;
+	u32	 pre[256];
+	u32	 suf[256];
+} MPEnum;
+
+STATIC void mp_suffix_dfs(MPEnum* E, u32 u, u8 rem, u8 idx) {
+	if (E->npaths >= E->max_paths) return;
+	if (rem == 0) {
+		if (u != E->t) return;
+		u32 ids[256];
+		u32 len = 0;
+		for (u32 i = 0; i <= (u32)E->split; i++) ids[len++] = E->pre[i];
+		for (u32 i = 1; i <= (u32)E->suffix; i++) ids[len++] = E->suf[i];
+
+		E->npaths++;
+		if (!E->first.node) E->first = path_from_ids(ids, len);
+		return;
+	}
+
+	u16	 outdeg = ARR_LEN(entries[u].links);
+	u32* L		= (u32*)ARR_PTR(entries[u].links);
+	for (u16 j = 0; j < outdeg; j++) {
+		u32 v = L[j];
+		if (mp_db[v] == (u8)(rem - 1)) {
+			E->suf[idx + 1] = v;
+			mp_suffix_dfs(E, v, (u8)(rem - 1), (u8)(idx + 1));
+			if (E->npaths >= E->max_paths) return;
+		}
+	}
+}
+
+STATIC void mp_prefix_dfs(MPEnum* E, u32 u, u8 depth) {
+	if (E->npaths >= E->max_paths) return;
+	if (depth == E->split) {
+		if (mp_db[u] == E->suffix) {
+			E->suf[0] = u;
+			mp_suffix_dfs(E, u, E->suffix, 0);
+		}
+		return;
+	}
+	u16	 outdeg = ARR_LEN(entries[u].links);
+	u32* L		= (u32*)ARR_PTR(entries[u].links);
+	for (u16 j = 0; j < outdeg; j++) {
+		u32 v = L[j];
+		if (mp_df[v] == (u8)(depth + 1)) {
+			E->pre[depth + 1] = v;
+			mp_prefix_dfs(E, v, (u8)(depth + 1));
+			if (E->npaths >= E->max_paths) return;
+		}
+	}
+}
+
+STATIC Path find_paths_bikpaths(string start, string target, u32 max_depth_u32, u32 max_paths) {
+	if (max_paths == 0) max_paths = 1;
+	if (max_depth_u32 > 254) {
+		fprintf(stderr, "error: maxdepth must be <= 254\n");
+		exit(2);
+	}
+	u8 max_depth = (u8)max_depth_u32;
+
+	Entry* se = find_entry(start);
+	Entry* te = find_entry(target);
+	if (!se || !te) return (Path){0};
+
+	u32 s = (u32)(se - entries);
+	u32 t = (u32)(te - entries);
+	if (s == t) {
+		u32 ids[1] = {s};
+		return path_from_ids(ids, 1);
+	}
+
+	u32 N = (u32)nr_entries;
+	sp_init(N);
+	mp_init(N);
+	build_reverse_csr(N);
+
+	// 1) provable shortest distance D (via BFS distances)
+	u32 vis_s = 0;
+	u8	D	  = sp_bfs_ds(s, t, max_depth, &vis_s);
+	sp_reset_ds(vis_s);
+	if (D == 0xFF) return (Path){0};
+
+	u8 split  = (u8)((D + 1) / 2);
+	u8 suffix = (u8)(D - split);
+
+	u32 vis_f = mp_bfs_prefix(s, split);
+	u32 vis_b = mp_rbfs_suffix(t, suffix);
+
+	MPEnum E	= {0};
+	E.s			= s;
+	E.t			= t;
+	E.D			= D;
+	E.split		= split;
+	E.suffix	= suffix;
+	E.max_paths = max_paths;
+	E.npaths	= 0;
+	E.first		= (Path){0};
+	E.pre[0]	= s;
+
+	mp_prefix_dfs(&E, s, 0);
+
+	mp_reset_db(vis_b);
+	mp_reset_df(vis_f);
+	return E.first;
+}
+
 STATIC Path find_path(string start, string target) {
 	Entry* start_entry	= find_entry(start);
 	Entry* target_entry = find_entry(target);
@@ -631,14 +950,8 @@ STATIC Path find_path(string start, string target) {
 		return (Path){0};
 	}
 
-	Path path = (Path){HEAP((Node){.data = string_clone(start)})};
-
-	for (int depth = 0; depth < 12; depth++) {
-		DFSState state = (DFSState){.depth = 0, .limit = depth, .idx = (start_entry - entries)};
-		if (dfs(start_entry, target, state, path.node)) return path;
-	}
-	path_free(&path);
-	return path;
+	// Use bikpaths backend; keep max depth consistent with bench default.
+	return find_paths_bikpaths(start, target, MAX_DEPTH, 1);
 }
 
 STATIC inline void print_path(Path path) {
@@ -666,45 +979,6 @@ STATIC inline void path_free(Path* path) {
 		free(tmp);
 	}
 	path->node = 0;
-}
-
-STATIC bool dfs(Entry* entry, string target, DFSState state, Node* path) {
-	string node = entry->title;
-	if (string_eq(node, target)) {
-		path->data = node;
-		return true;
-	}
-
-	if (state.limit > state.depth + 1) {
-		int d			  = state.limit - state.depth;
-		u8* checked_depth = depths + state.idx;
-		if (*checked_depth >= d) {
-#ifdef DEBUG_CACHE
-			++cache_hits;
-#endif
-			return false;
-		}
-#ifdef DEBUG_CACHE
-		++cache_misses;
-#endif
-		*checked_depth = d;
-
-		if (!path->next) path->next = HEAP((Node){});
-
-		u16	 nr_links = ARR_LEN(entry->links);
-		int* links	  = ARR_PTR(entry->links);
-		for (int i = 0; i < nr_links; i++) {
-			int		 newi	   = links[i];
-			Entry*	 child	   = entries + newi;
-			DFSState new_state = (DFSState){.depth = state.depth + 1, .limit = state.limit, .idx = newi};
-			if (dfs(child, target, new_state, path->next)) {
-				string str		 = string_clone(child->title);
-				path->next->data = str;
-				return true;
-			}
-		}
-	}
-	return false;
 }
 
 #if UINTPTR_MAX != 0xffffffffffffffff && !defined(__EMSCRIPTEN__)
