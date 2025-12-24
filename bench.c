@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <errno.h>
 #include <float.h>
 #include <inttypes.h>
@@ -36,6 +37,36 @@ typedef struct Path	 Path;
 typedef struct Node	 Node;
 typedef struct Entry Entry;
 
+typedef struct {
+	u64* w;
+	u32  nbits;
+	u32  nwords;
+} Bitset;
+
+STATIC Bitset bitset_make(u32 nbits) {
+	Bitset b = {0};
+	b.nbits = nbits;
+	b.nwords = (nbits + 63u) / 64u;
+	b.w = (u64*)calloc((size_t)b.nwords, sizeof(u64));
+	if (!b.w) {
+		fprintf(stderr, "error: out of memory allocating bitset\n");
+		exit(1);
+	}
+	return b;
+}
+
+STATIC inline bool bitset_get(const Bitset* b, u32 i) {
+	return (b->w[i >> 6] >> (i & 63u)) & 1ull;
+}
+
+STATIC inline void bitset_set(Bitset* b, u32 i) {
+	b->w[i >> 6] |= 1ull << (i & 63u);
+}
+
+STATIC inline void bitset_clr(Bitset* b, u32 i) {
+	b->w[i >> 6] &= ~(1ull << (i & 63u));
+}
+
 typedef struct DFSState {
 	int idx;
 	u8	depth;
@@ -62,12 +93,38 @@ STATIC void load_mem3(char* buf);
 
 STATIC Entry* find_entry(string name);
 STATIC Path	  find_path(string start, string target);
+STATIC Path	  find_path_bfs(string start, string target, u32 max_depth);
+STATIC Path	  find_path_bibfs(string start, string target, u32 max_depth);
+STATIC Path	  find_paths_kshortest(string start, string target, u32 max_depth, u32 max_paths, bool print_paths, u32* out_npaths);
 STATIC void	  path_free(Path* head);
 STATIC bool	  dfs(Entry* entry, string target, DFSState state, Node* path);
 
 STATIC int	  nr_entries = 0;
+STATIC u32 total_links = 0;
 STATIC Entry* entries;
 STATIC u8*	  depths;
+
+STATIC Path path_from_ids(const u32* ids, u32 len) {
+	if (len == 0) return (Path){0};
+
+	Node* head = NULL;
+	Node* cur  = NULL;
+
+	for (u32 i = 0; i < len; i++) {
+		Node* n = (Node*)calloc(1, sizeof(Node));
+		if (!n) {
+			fprintf(stderr, "error: out of memory building path\n");
+			exit(1);
+		}
+		n->data = string_clone(entries[ids[i]].title);
+
+		if (!head) head = n;
+		else cur->next = n;
+		cur = n;
+	}
+
+	return (Path){.node = head};
+}
 
 #define DUMP_FORMAT_VERSION 1
 STATIC void load_mem(char* path) {
@@ -175,8 +232,8 @@ STATIC void load_mem3(char* buf) {
 	entries = malloc(sizeof(Entry) * (size_t)nr_entries);
 	p += sizeof(int32_t);
 
-	// uint32_t total_links;
-	p += sizeof(uint32_t);
+	memcpy(&total_links, p, sizeof(u32));
+	p += sizeof(u32);
 	// uint32_t total_title_bytes;
 	p += sizeof(uint32_t);
 
@@ -272,6 +329,72 @@ STATIC inline void path_free(Path* path) {
 	path->node = 0;
 }
 
+// --- Path verification helpers (for BFS / BiBFS correctness) -----------------
+STATIC inline u32 path_len_nodes(const Path* p) {
+	u32 n = 0;
+	for (Node* x = p ? p->node : null; x != null; x = x->next) n++;
+	return n;
+}
+
+STATIC inline bool path_equal_nodes(const Path* a, const Path* b) {
+	Node* x = a ? a->node : null;
+	Node* y = b ? b->node : null;
+	while (x != null && y != null) {
+		if (!string_eq(x->data, y->data)) return false;
+		x = x->next;
+		y = y->next;
+	}
+	return x == null && y == null;
+}
+
+STATIC void path_fprint(FILE* f, const Path* p, u32 max_nodes) {
+	if (!p || !p->node) {
+		fputs("(null)", f);
+		return;
+	}
+	u32 i = 0;
+	for (Node* x = p->node; x != null; x = x->next) {
+		if (i == max_nodes) {
+			fputs(" -> ...", f);
+			return;
+		}
+		if (i) fputs(" -> ", f);
+		fprintf(f, "%.*s", STR_LEN(x->data), STR_PTR(x->data));
+		i++;
+	}
+}
+
+STATIC void verify_paths_or_die(const char* algo_name, string start, string target, const Path* expected,
+							   const Path* found) {
+	u32 elen = path_len_nodes(expected);
+	u32 flen = path_len_nodes(found);
+	if (elen != flen) {
+		fprintf(stderr, "\n[FATAL] %s produced non-shortest length.\n", algo_name);
+		fprintf(stderr, "[FATAL] query: `%.*s` -> `%.*s`\n", STR_LEN(start), STR_PTR(start), STR_LEN(target),
+				STR_PTR(target));
+		fprintf(stderr, "[FATAL] expected_len_nodes=%u  found_len_nodes=%u\n", elen, flen);
+		fprintf(stderr, "[FATAL] expected_path: ");
+		path_fprint(stderr, expected, 12);
+		fputc('\n', stderr);
+		fprintf(stderr, "[FATAL] found_path:    ");
+		path_fprint(stderr, found, 12);
+		fputc('\n', stderr);
+		exit(3);
+	}
+	if (!path_equal_nodes(expected, found)) {
+		fprintf(stderr, "\n[WARN] %s produced a different shortest path (same length).\n", algo_name);
+		fprintf(stderr, "[WARN] query: `%.*s` -> `%.*s`\n", STR_LEN(start), STR_PTR(start), STR_LEN(target),
+				STR_PTR(target));
+		fprintf(stderr, "[WARN] len_nodes=%u\n", elen);
+		fprintf(stderr, "[WARN] expected_path: ");
+		path_fprint(stderr, expected, 12);
+		fputc('\n', stderr);
+		fprintf(stderr, "[WARN] found_path:    ");
+		path_fprint(stderr, found, 12);
+		fputc('\n', stderr);
+	}
+}
+
 STATIC bool dfs(Entry* entry, string target, DFSState state, Node* path) {
 	string node = entry->title;
 	if (string_eq(node, target)) {
@@ -305,6 +428,529 @@ STATIC bool dfs(Entry* entry, string target, DFSState state, Node* path) {
 	return false;
 }
 
+#define PARENT_NONE UINT32_MAX
+
+STATIC Bitset bfs_vis;
+STATIC u32*   bfs_q = NULL;
+STATIC u32*   bfs_parent = NULL;
+STATIC bool   bfs_inited = false;
+
+STATIC void bfs_init(u32 N) {
+	if (bfs_inited) return;
+	bfs_vis = bitset_make(N);
+	bfs_q = (u32*)malloc((size_t)N * sizeof(u32));
+	bfs_parent = (u32*)malloc((size_t)N * sizeof(u32));
+	if (!bfs_q || !bfs_parent) {
+		fprintf(stderr, "error: out of memory initializing BFS\n");
+		exit(1);
+	}
+	bfs_inited = true;
+}
+
+STATIC Path find_path_bfs_ids(u32 s, u32 t, u32 max_depth) {
+	if (s == t) {
+		u32 ids[1] = {s};
+		return path_from_ids(ids, 1);
+	}
+
+	u32 head = 0, tail = 0;
+	u32 depth = 0;
+
+	bfs_q[tail++] = s;
+	bitset_set(&bfs_vis, s);
+	bfs_parent[s] = PARENT_NONE;
+
+	u32 level_end = tail;
+
+	bool found = false;
+	while (head < tail) {
+		if (depth > max_depth) break;
+
+		while (head < level_end) {
+			u32 v = bfs_q[head++];
+			u16 outdeg = ARR_LEN(entries[v].links);
+			u32* L = (u32*)ARR_PTR(entries[v].links);
+
+			for (u16 j = 0; j < outdeg; j++) {
+				u32 u = L[j];
+				if (!bitset_get(&bfs_vis, u)) {
+					bitset_set(&bfs_vis, u);
+					bfs_parent[u] = v;
+					bfs_q[tail++] = u;
+
+					if (u == t) {
+						found = true;
+						goto done;
+					}
+				}
+			}
+		}
+
+		depth++;
+		level_end = tail;
+	}
+
+done:
+	Path out = (Path){0};
+	if (found) {
+		u32 tmp_cap = max_depth + 2;
+		u32* tmp = (u32*)malloc((size_t)tmp_cap * sizeof(u32));
+		if (!tmp) {
+			fprintf(stderr, "error: out of memory\n");
+			exit(1);
+		}
+
+		u32 len = 0;
+		for (u32 x = t; x != PARENT_NONE; x = bfs_parent[x]) {
+			if (len >= tmp_cap) break;
+			tmp[len++] = x;
+			if (x == s) break;
+		}
+
+		for (u32 i = 0; i < len / 2; i++) {
+			u32 a = tmp[i];
+			tmp[i] = tmp[len - 1 - i];
+			tmp[len - 1 - i] = a;
+		}
+
+		out = path_from_ids(tmp, len);
+		free(tmp);
+	}
+
+	for (u32 i = 0; i < tail; i++) {
+		bitset_clr(&bfs_vis, bfs_q[i]);
+	}
+
+	return out;
+}
+
+STATIC Path find_path_bfs(string start, string target, u32 max_depth) {
+	Entry* se = find_entry(start);
+	Entry* te = find_entry(target);
+	if (!se || !te) return (Path){0};
+
+	u32 s = (u32)(se - entries);
+	u32 t = (u32)(te - entries);
+	return find_path_bfs_ids(s, t, max_depth);
+}
+
+STATIC u32* in_offsets = NULL; // size N+1
+STATIC u32* in_edges   = NULL; // size total_links
+STATIC bool rev_inited = false;
+
+STATIC void build_reverse_csr(u32 N) {
+	if (rev_inited) return;
+	if (total_links == 0) {
+		fprintf(stderr, "error: total_links missing from db header\n");
+		exit(1);
+	}
+
+	in_offsets = (u32*)calloc((size_t)N + 1u, sizeof(u32));
+	in_edges   = (u32*)malloc((size_t)total_links * sizeof(u32));
+	if (!in_offsets || !in_edges) {
+		fprintf(stderr, "error: out of memory building reverse CSR\n");
+		exit(1);
+	}
+
+	for (u32 src = 0; src < N; src++) {
+		u16 outdeg = ARR_LEN(entries[src].links);
+		u32* L = (u32*)ARR_PTR(entries[src].links);
+		for (u16 j = 0; j < outdeg; j++) {
+			u32 dst = L[j];
+			if (dst < N) in_offsets[dst + 1]++;
+		}
+	}
+
+	for (u32 i = 1; i <= N; i++) {
+		in_offsets[i] += in_offsets[i - 1];
+	}
+
+	u32* cur = (u32*)malloc(((size_t)N + 1u) * sizeof(u32));
+	if (!cur) {
+		fprintf(stderr, "error: out of memory\n");
+		exit(1);
+	}
+	memcpy(cur, in_offsets, ((size_t)N + 1u) * sizeof(u32));
+
+	for (u32 src = 0; src < N; src++) {
+		u16 outdeg = ARR_LEN(entries[src].links);
+		u32* L = (u32*)ARR_PTR(entries[src].links);
+		for (u16 j = 0; j < outdeg; j++) {
+			u32 dst = L[j];
+			if (dst >= N) continue;
+			u32 pos = cur[dst]++;
+			in_edges[pos] = src;
+		}
+	}
+
+	free(cur);
+	rev_inited = true;
+}
+
+STATIC Bitset bi_vis_f, bi_vis_b;
+STATIC u32*   bi_qf = NULL;
+STATIC u32*   bi_qb = NULL;
+STATIC u32*   bi_pf = NULL; // parent forward: child -> prev
+STATIC u32*   bi_pb = NULL; // parent backward: node -> next toward target
+STATIC bool   bi_inited = false;
+
+STATIC void bibfs_init(u32 N) {
+	if (bi_inited) return;
+	bi_vis_f = bitset_make(N);
+	bi_vis_b = bitset_make(N);
+	bi_qf = (u32*)malloc((size_t)N * sizeof(u32));
+	bi_qb = (u32*)malloc((size_t)N * sizeof(u32));
+	bi_pf = (u32*)malloc((size_t)N * sizeof(u32));
+	bi_pb = (u32*)malloc((size_t)N * sizeof(u32));
+	if (!bi_qf || !bi_qb || !bi_pf || !bi_pb) {
+		fprintf(stderr, "error: out of memory initializing BiBFS\n");
+		exit(1);
+	}
+	bi_inited = true;
+}
+
+STATIC Path find_path_bibfs_ids(u32 s, u32 t, u32 max_depth) {
+	if (s == t) {
+		u32 ids[1] = {s};
+		return path_from_ids(ids, 1);
+	}
+
+	u32 fh = 0, ft = 0, f_level_end = 0;
+	u32 bh = 0, bt = 0, b_level_end = 0;
+	u32 df = 0, db = 0;
+
+	bi_qf[ft++] = s;
+	f_level_end = ft;
+	bitset_set(&bi_vis_f, s);
+	bi_pf[s] = PARENT_NONE;
+
+	bi_qb[bt++] = t;
+	b_level_end = bt;
+	bitset_set(&bi_vis_b, t);
+	bi_pb[t] = PARENT_NONE;
+
+	bool found = false;
+	u32 meet = PARENT_NONE;
+
+	while (fh < ft && bh < bt) {
+		if (df + db > max_depth) break;
+
+		u32 f_front = f_level_end - fh;
+		u32 b_front = b_level_end - bh;
+		bool expand_forward = (f_front <= b_front);
+
+		if (expand_forward) {
+			while (fh < f_level_end) {
+				u32 v = bi_qf[fh++];
+				u16 outdeg = ARR_LEN(entries[v].links);
+				u32* L = (u32*)ARR_PTR(entries[v].links);
+
+				for (u16 j = 0; j < outdeg; j++) {
+					u32 u = L[j];
+					if (!bitset_get(&bi_vis_f, u)) {
+						bitset_set(&bi_vis_f, u);
+						bi_pf[u] = v;
+						bi_qf[ft++] = u;
+
+						if (bitset_get(&bi_vis_b, u)) {
+							meet = u;
+							found = true;
+							goto done;
+						}
+					}
+				}
+			}
+			df++;
+			f_level_end = ft;
+		} else {
+			while (bh < b_level_end) {
+				u32 v = bi_qb[bh++];
+
+				u32 beg = in_offsets[v];
+				u32 end = in_offsets[v + 1];
+				for (u32 pos = beg; pos < end; pos++) {
+					u32 pred = in_edges[pos];
+					if (!bitset_get(&bi_vis_b, pred)) {
+						bitset_set(&bi_vis_b, pred);
+						bi_pb[pred] = v;
+						bi_qb[bt++] = pred;
+
+						if (bitset_get(&bi_vis_f, pred)) {
+							meet = pred;
+							found = true;
+							goto done;
+						}
+					}
+				}
+			}
+			db++;
+			b_level_end = bt;
+		}
+	}
+
+done:
+	Path out = (Path){0};
+
+	if (found && meet != PARENT_NONE) {
+		u32 cap = max_depth + 2;
+		u32* left = (u32*)malloc((size_t)cap * sizeof(u32));
+		u32* right = (u32*)malloc((size_t)cap * sizeof(u32));
+		if (!left || !right) {
+			fprintf(stderr, "error: out of memory\n");
+			exit(1);
+		}
+
+		u32 llen = 0;
+		for (u32 x = meet; x != PARENT_NONE; x = bi_pf[x]) {
+			if (llen >= cap) break;
+			left[llen++] = x;
+			if (x == s) break;
+		}
+		for (u32 i = 0; i < llen / 2; i++) {
+			u32 tmp = left[i];
+			left[i] = left[llen - 1 - i];
+			left[llen - 1 - i] = tmp;
+		}
+
+		u32 rlen = 0;
+		for (u32 x = bi_pb[meet]; x != PARENT_NONE; x = bi_pb[x]) {
+			if (rlen >= cap) break;
+			right[rlen++] = x;
+			if (x == t) break;
+		}
+
+		u32 total = llen + rlen;
+		u32* ids = (u32*)malloc((size_t)total * sizeof(u32));
+		if (!ids) {
+			fprintf(stderr, "error: out of memory\n");
+			exit(1);
+		}
+
+		memcpy(ids, left, (size_t)llen * sizeof(u32));
+		memcpy(ids + llen, right, (size_t)rlen * sizeof(u32));
+		out = path_from_ids(ids, total);
+
+		free(ids);
+		free(left);
+		free(right);
+	}
+
+	for (u32 i = 0; i < ft; i++) bitset_clr(&bi_vis_f, bi_qf[i]);
+	for (u32 i = 0; i < bt; i++) bitset_clr(&bi_vis_b, bi_qb[i]);
+
+	return out;
+}
+
+STATIC Path find_path_bibfs(string start, string target, u32 max_depth) {
+	Entry* se = find_entry(start);
+	Entry* te = find_entry(target);
+	if (!se || !te) return (Path){0};
+
+	u32 s = (u32)(se - entries);
+	u32 t = (u32)(te - entries);
+	return find_path_bibfs_ids(s, t, max_depth);
+}
+
+// -----------------------------------------------------------------------------
+// Enumerate up to MAX_PATHS shortest paths using ds/dt filtering:
+// 1) BFS from s to compute ds[] (distance from s) and D=ds[t]
+// 2) Reverse-BFS from t to compute dt[] (distance to t) up to depth D
+// 3) Enumerate paths on the shortest-path DAG where:
+//      ds[v] == ds[u] + 1  AND  ds[v] + dt[v] == D
+// This yields ONLY shortest paths (length D), and is deterministic w.r.t adjacency order.
+// -----------------------------------------------------------------------------
+
+STATIC u8*  sp_ds = NULL;
+STATIC u8*  sp_dt = NULL;
+STATIC u32* sp_qs = NULL;
+STATIC u32* sp_qt = NULL;
+STATIC bool sp_inited = false;
+
+STATIC void sp_init(u32 N) {
+	if (sp_inited) return;
+	sp_ds = (u8*)malloc((size_t)N * sizeof(u8));
+	sp_dt = (u8*)malloc((size_t)N * sizeof(u8));
+	sp_qs = (u32*)malloc((size_t)N * sizeof(u32));
+	sp_qt = (u32*)malloc((size_t)N * sizeof(u32));
+	if (!sp_ds || !sp_dt || !sp_qs || !sp_qt) {
+		fprintf(stderr, "error: out of memory initializing shortest-path enumerator\n");
+		exit(1);
+	}
+	memset(sp_ds, 0xFF, (size_t)N);
+	memset(sp_dt, 0xFF, (size_t)N);
+	sp_inited = true;
+}
+
+// BFS (outgoing) from s up to max_depth; returns D=ds[t] or 0xFF if not found within cap.
+// Also returns the number of visited nodes in *out_vis (for O(#visited) reset).
+STATIC u8 sp_bfs_ds(u32 s, u32 t, u8 max_depth, u32* out_vis) {
+	u32 head = 0, tail = 0;
+	sp_qs[tail++] = s;
+	sp_ds[s] = 0;
+
+	while (head < tail) {
+		u32 v = sp_qs[head++];
+		u8  dv = sp_ds[v];
+		if (v == t) break;
+		if (dv >= max_depth) continue;
+
+		u16 outdeg = ARR_LEN(entries[v].links);
+		u32* L = (u32*)ARR_PTR(entries[v].links);
+		for (u16 j = 0; j < outdeg; j++) {
+			u32 u = L[j];
+			if (sp_ds[u] != 0xFF) continue;
+			sp_ds[u] = (u8)(dv + 1);
+			sp_qs[tail++] = u;
+			if (u == t) {
+				head = tail;
+				break;
+			} // early exit
+		}
+	}
+
+	if (out_vis) *out_vis = tail;
+	return sp_ds[t];
+}
+
+// Reverse-BFS (incoming edges) from t up to depth D; fills dt[].
+STATIC void sp_rbfs_dt(u32 t, u8 D, u32* out_vis) {
+	u32 head = 0, tail = 0;
+	sp_qt[tail++] = t;
+	sp_dt[t] = 0;
+
+	while (head < tail) {
+		u32 v = sp_qt[head++];
+		u8  dv = sp_dt[v];
+		if (dv >= D) continue;
+
+		u32 beg = in_offsets[v];
+		u32 end = in_offsets[v + 1];
+		for (u32 pos = beg; pos < end; pos++) {
+			u32 pred = in_edges[pos];
+			if (sp_dt[pred] != 0xFF) continue;
+			sp_dt[pred] = (u8)(dv + 1);
+			sp_qt[tail++] = pred;
+		}
+	}
+
+	if (out_vis) *out_vis = tail;
+}
+
+STATIC void sp_reset_ds(u32 vis) {
+	for (u32 i = 0; i < vis; i++) sp_ds[sp_qs[i]] = 0xFF;
+}
+
+STATIC void sp_reset_dt(u32 vis) {
+	for (u32 i = 0; i < vis; i++) sp_dt[sp_qt[i]] = 0xFF;
+}
+
+STATIC void sp_fprint_ids(FILE* f, const u32* ids, u32 len) {
+	for (u32 i = 0; i < len; i++) {
+		if (i) fputs(" -> ", f);
+		string title = entries[ids[i]].title;
+		fprintf(f, "%.*s", STR_LEN(title), STR_PTR(title));
+	}
+}
+
+STATIC void sp_enum_dfs(u32 u, u32 t, u8 D, u32 max_paths, bool print_paths, u32* stack, u8 depth, u32* npaths,
+				   Path* first_path) {
+	if (*npaths >= max_paths) return;
+
+	if (u == t) {
+		(*npaths)++;
+		if (first_path && !first_path->node) {
+			*first_path = path_from_ids(stack, (u32)depth + 1);
+		}
+		if (print_paths) {
+			fprintf(stdout, "[path %u] ", *npaths);
+			sp_fprint_ids(stdout, stack, (u32)depth + 1);
+			fputc('\n', stdout);
+		}
+		return;
+	}
+
+	u16 outdeg = ARR_LEN(entries[u].links);
+	u32* L = (u32*)ARR_PTR(entries[u].links);
+	for (u16 j = 0; j < outdeg; j++) {
+		u32 v = L[j];
+		u8 dsv = sp_ds[v];
+		if (dsv == 0xFF) continue;
+		// Must advance exactly one layer
+		if (dsv != (u8)(depth + 1)) continue;
+		u8 dtv = sp_dt[v];
+		if (dtv == 0xFF) continue;
+		// Must be on some shortest path: ds[v] + dt[v] == D
+		if ((u8)(dsv + dtv) != D) continue;
+
+		stack[depth + 1] = v;
+		sp_enum_dfs(v, t, D, max_paths, print_paths, stack, (u8)(depth + 1), npaths, first_path);
+		if (*npaths >= max_paths) return;
+	}
+}
+
+STATIC Path find_paths_kshortest(string start, string target, u32 max_depth_u32, u32 max_paths, bool print_paths,
+						 u32* out_npaths) {
+	if (out_npaths) *out_npaths = 0;
+	if (max_paths == 0) max_paths = 1;
+
+	if (max_depth_u32 > 254) {
+		fprintf(stderr, "error: maxdepth must be <= 254 for kpaths (uint8 distances)\n");
+		exit(2);
+	}
+	u8 max_depth = (u8)max_depth_u32;
+
+	Entry* se = find_entry(start);
+	Entry* te = find_entry(target);
+	if (!se || !te) return (Path){0};
+
+	u32 s = (u32)(se - entries);
+	u32 t = (u32)(te - entries);
+	if (s == t) {
+		u32 ids[1] = { s };
+		if (out_npaths) *out_npaths = 1;
+		return path_from_ids(ids, 1);
+	}
+
+	u32 N = (u32)nr_entries;
+	sp_init(N);
+	build_reverse_csr(N); // required for dt[]
+
+	u32 vis_s = 0, vis_t = 0;
+	u8 D = sp_bfs_ds(s, t, max_depth, &vis_s);
+
+	Path first = (Path){0};
+	u32 npaths = 0;
+
+	if (D != 0xFF) {
+		// Fill dt[] only up to depth D.
+		sp_rbfs_dt(t, D, &vis_t);
+
+		// If dt[s] is unset, something is inconsistent (should not happen if ds[t] found)
+		if (sp_dt[s] == 0xFF) {
+			// Still reset and return not found
+			sp_reset_dt(vis_t);
+			sp_reset_ds(vis_s);
+			return (Path){0};
+		}
+
+		u32* stack = (u32*)malloc((size_t)(D + 1u) * sizeof(u32));
+		if (!stack) {
+			fprintf(stderr, "error: out of memory\n");
+			exit(1);
+		}
+		stack[0] = s;
+		sp_enum_dfs(s, t, D, max_paths, print_paths, stack, 0, &npaths, &first);
+		free(stack);
+	}
+
+	if (out_npaths) *out_npaths = npaths;
+
+	// Reset distances for visited nodes only (no O(N) memset per query)
+	sp_reset_dt(vis_t);
+	sp_reset_ds(vis_s);
+	return first;
+}
+
 static uint64_t rng64(uint64_t* s) {
 	uint64_t x = *s;
 	x ^= x >> 12;
@@ -318,7 +964,7 @@ typedef struct {
 	uint32_t  n;
 	uint32_t* gid;
 	uint32_t* alias;
-	float*	  prob;
+	double*	  prob;
 	uint64_t  rng;
 } PRSampler;
 
@@ -351,7 +997,7 @@ static int prsampler_build(PRSampler* S, const double* pr, const uint8_t* active
 	S->n	 = n;
 	S->gid	 = (uint32_t*)malloc((size_t)n * sizeof(uint32_t));
 	S->alias = (uint32_t*)malloc((size_t)n * sizeof(uint32_t));
-	S->prob	 = (float*)malloc((size_t)n * sizeof(float));
+	S->prob	 = (double*)malloc((size_t)n * sizeof(double));
 	if (!S->gid || !S->alias || !S->prob) {
 		prsampler_free(S);
 		return 0;
@@ -405,7 +1051,7 @@ static int prsampler_build(PRSampler* S, const double* pr, const uint8_t* active
 		double ps = q[s];
 		if (ps < 0.0) ps = 0.0;
 		if (ps > 1.0) ps = 1.0;
-		S->prob[s]	= (float)ps;
+		S->prob[s]	= (double)ps;
 		S->alias[s] = l;
 
 		q[l] = (q[l] + q[s]) - 1.0;
@@ -558,9 +1204,9 @@ static void print_spinner_line(uint32_t iter0, uint32_t iters, string start, str
 	char	 tbuf[16];
 	format_elapsed_mmss_ms(tbuf, elapsed);
 
-	fprintf(stderr, "\x1b[0K\x1b[1K\x1b[2K\r %s %u / %u `%.*s` -> `%.*s` %s", spin, iter0 + 1, iters, STR_LEN(start),
+	fprintf(stdout, "\x1b[0K\x1b[1K\x1b[2K\r %s %u / %u `%.*s` -> `%.*s` %s", spin, iter0 + 1, iters, STR_LEN(start),
 			STR_PTR(start), STR_LEN(target), STR_PTR(target), tbuf);
-	fflush(stderr);
+	fflush(stdout);
 }
 
 #if !defined(_WIN32)
@@ -592,7 +1238,11 @@ int main(int argc, char** argv) {
 	TIME_INIT();
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s <db.bin|db.xz> [--iters N] [--alpha A] [--seed S]\n", argv[0]);
+		fprintf(stderr,
+				"usage: %s <db.bin|db.xz> [--iters N] [--alpha A] [--seed S]\n"
+				"       [--algo iddfs|bfs|bibfs|kpaths] [--maxdepth D]\n"
+				"       [--maxpaths K] [--printpaths]\n",
+				argv[0]);
 		return 2;
 	}
 
@@ -600,6 +1250,12 @@ int main(int argc, char** argv) {
 	uint32_t	iters	= 1000;
 	double		alpha	= 1.6;
 	uint64_t	seed	= 1234567ULL;
+
+	typedef enum { ALGO_IDDFS, ALGO_BFS, ALGO_BIBFS, ALGO_KPATHS } Algo;
+	Algo algo = ALGO_IDDFS;
+	u32  max_depth = 12;
+	u32  max_paths = 16;
+	bool print_paths = false;
 
 	for (int i = 2; i < argc; i++) {
 		if ((strcmp(argv[i], "--iters") == 0 || strcmp(argv[i], "-n") == 0) && i + 1 < argc) {
@@ -612,6 +1268,22 @@ int main(int argc, char** argv) {
 			}
 		} else if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
 			seed = parse_u64_or_die(argv[++i], "seed");
+		} else if (strcmp(argv[i], "--algo") == 0 && i + 1 < argc) {
+			const char* a = argv[++i];
+			if (strcmp(a, "iddfs") == 0) algo = ALGO_IDDFS;
+			else if (strcmp(a, "bfs") == 0) algo = ALGO_BFS;
+			else if (strcmp(a, "bibfs") == 0) algo = ALGO_BIBFS;
+			else if (strcmp(a, "kpaths") == 0) algo = ALGO_KPATHS;
+			else {
+				fprintf(stderr, "error: unknown algo: %s\n", a);
+				return 2;
+			}
+		} else if (strcmp(argv[i], "--maxdepth") == 0 && i + 1 < argc) {
+			max_depth = (u32)parse_u64_or_die(argv[++i], "maxdepth");
+		} else if (strcmp(argv[i], "--maxpaths") == 0 && i + 1 < argc) {
+			max_paths = (u32)parse_u64_or_die(argv[++i], "maxpaths");
+		} else if (strcmp(argv[i], "--printpaths") == 0) {
+			print_paths = true;
 		} else {
 			fprintf(stderr, "error: unknown arg: %s\n", argv[i]);
 			return 2;
@@ -626,6 +1298,18 @@ int main(int argc, char** argv) {
 	fprintf(stdout, "[bench] entries=%d iters=%u alpha=%.6g seed=%" PRIu64 "\n", nr_entries, iters, alpha, seed);
 
 	uint32_t N		= (uint32_t)nr_entries;
+	// NOTE: when running BFS or BiBFS, we always compute an expected shortest path using BFS
+	// and compare. So BFS must be initialized for both ALGO_BFS and ALGO_BIBFS.
+	if (algo == ALGO_BFS) {
+		bfs_init((u32)N);
+	} else if (algo == ALGO_BIBFS) {
+		bfs_init((u32)N); // expected shortest path
+		bibfs_init((u32)N);
+		build_reverse_csr((u32)N);
+	} else if (algo == ALGO_KPATHS) {
+		// uses reverse CSR and its own ds/dt buffers
+		build_reverse_csr((u32)N);
+	}
 	uint8_t* active = (uint8_t*)malloc((size_t)N);
 	if (!active) {
 		fprintf(stderr, "error: out of memory\n");
@@ -666,8 +1350,14 @@ int main(int argc, char** argv) {
 	uint64_t max_t = 0;
 	uint32_t max_s = 0, max_tgt = 0;
 	uint32_t not_found = 0;
+	u64 total_paths_enumerated = 0;
 
 	u64 bench_start = get_monotonic_time();
+	const char* algo_name =
+		(algo == ALGO_IDDFS) ? "iddfs" :
+		(algo == ALGO_BFS)   ? "bfs"   :
+		(algo == ALGO_BIBFS) ? "bibfs" : "kpaths";
+	(void)algo_name;
 	for (uint32_t i = 0; i < iters; i++) {
 		uint32_t s = random_biased(&samp);
 		uint32_t t = random_biased(&samp);
@@ -678,7 +1368,22 @@ int main(int argc, char** argv) {
 		print_spinner_line(i, iters, start, target, bench_start);
 
 		u64	 t0	  = get_monotonic_time();
-		Path path = find_path(start, target);
+		Path path;
+		u32 npaths = 0;
+		if (algo == ALGO_IDDFS) {
+			path = find_path(start, target);
+			// Exact behavior from interactive client loop: clear depths between queries.
+			memset(depths, 0, (size_t)nr_entries);
+		} else if (algo == ALGO_BFS) {
+			path = find_path_bfs(start, target, max_depth);
+		} else {
+			if (algo == ALGO_BIBFS) {
+				path = find_path_bibfs(start, target, max_depth);
+			} else {
+				path = find_paths_kshortest(start, target, max_depth, max_paths, print_paths, &npaths);
+				total_paths_enumerated += (u64)npaths;
+			}
+		}
 		u64	 t1	  = get_monotonic_time();
 
 		uint64_t dt = (uint64_t)(t1 - t0);
@@ -696,11 +1401,19 @@ int main(int argc, char** argv) {
 		mean += delta / (double)(i + 1);
 		m2 += delta * (x - mean);
 
+		// // Correctness verification:
+		// // For BFS / BiBFS runs, compute an expected shortest path via BFS and compare.
+		// // - hard error + exit if lengths differ
+		// // - warning if same length but different actual path
+		// if (algo != ALGO_IDDFS) {
+		// 	Path expected = find_path(start, target);
+		// 	memset(depths, 0, (size_t)nr_entries);
+		// 	verify_paths_or_die(algo_name, start, target, &expected, &path);
+		// 	path_free(&expected);
+		// }
+
 		if (!path.node) not_found++;
 		path_free(&path);
-
-		// Exact behavior from interactive client loop: clear depths between queries.
-		memset(depths, 0, (size_t)nr_entries);
 	}
 	fprintf(stderr, "\n");
 	u64 bench_end = get_monotonic_time();
@@ -736,6 +1449,10 @@ int main(int argc, char** argv) {
 			ns_to_ms(p25), ns_to_ms(p50), ns_to_ms(p75), ns_to_ms(p90), ns_to_ms(p99));
 	fprintf(stdout, "[result] not_found=%u (%.2f%%)\n", not_found,
 			iters ? (100.0 * (double)not_found / (double)iters) : 0.0);
+	if (algo == ALGO_KPATHS) {
+		double avg = iters ? ((double)total_paths_enumerated / (double)iters) : 0.0;
+		fprintf(stdout, "[result] avg_paths_enumerated=%.3f (capped at --maxpaths=%u)\n", avg, max_paths);
+	}
 
 	fprintf(stdout, "\n[slowest] dt_ms=%.3f\n", ns_to_ms(max_t));
 	fprintf(stdout, "[slowest] start=%.*s\n", STR_LEN(entries[max_s].title), STR_PTR(entries[max_s].title));
