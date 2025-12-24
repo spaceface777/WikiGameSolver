@@ -249,6 +249,7 @@ void threadpool_main(void* ptr) {
 		if (!node) {
 			write(data->connfd, "No path found", sizeof("No path found") - 1);
 			close(data->connfd);
+			--nr_jobs;
 			return;
 		}
 
