@@ -241,15 +241,16 @@ void threadpool_main(void* ptr) {
 	ThreadData* data = (ThreadData*)ptr;
 
 	thread_main(ptr);
+	
+	printf("finished a job; %d remaining\n", --nr_jobs);
 
 	Path path = data->path;
-
 	if (data->connfd != -1) {
 		Node* node = path.node;
 		if (!node) {
-			write(data->connfd, "No path found", sizeof("No path found") - 1);
+			write(data->connfd, "No path found", strlen("No path found"));
+			write(data->connfd, "\0", 1);
 			close(data->connfd);
-			--nr_jobs;
 			return;
 		}
 
@@ -265,8 +266,6 @@ void threadpool_main(void* ptr) {
 
 	path_free(&path);
 	free(ptr);
-
-	printf("finished a job; %d remaining\n", --nr_jobs);
 }
 #endif
 
