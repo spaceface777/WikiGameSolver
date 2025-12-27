@@ -4,12 +4,10 @@
 #include <libxml/parser.h>
 #include <libxml/xmlreader.h>
 #include <unistd.h>
-#include <stdlib.h>
 
 #include <stdint.h>
+#include <stdlib.h>
 
-#include <algorithm>
-#include <cassert>
 #include <iostream>
 #include <set>
 
@@ -24,7 +22,7 @@ void nop(void* p) { (void)p; }
 #include "map.h"
 
 static int DUMP_DATE = 221201;
-static const int DUMP_FORMAT_VERSION = 4;
+static const int DUMP_FORMAT_VERSION = 2;
 
 map_string_string string_data = new_map_string_string();
 map_string_stringptr link_map = new_map_string_stringptr();
@@ -143,23 +141,19 @@ link_loop:
                                     continue;
                                 }
 
-                                // strip <ref>, <nowiki>, <gallery>, etc. tags
+                                // strip <ref> and <nowiki>
                                 size_t tag_end = find_in_range(article, ">", tag_start + 1);
                                 if (tag_end != std::string::npos) {
                                     std::string_view full_opening_tag = std::string_view(article.data() + tag_start + 1, tag_end - tag_start - 1);
                                     size_t space_idx = find_in_range(full_opening_tag, " ");
                                     std::string_view tag_name = space_idx == std::string::npos ? full_opening_tag : full_opening_tag.substr(0, space_idx);
-                                    if (tag_name == "ref" || tag_name == "nowiki" || tag_name == "gallery") {
+                                    if (tag_name == "ref" || tag_name == "nowiki") {
                                         if (full_opening_tag.size() > 0 && full_opening_tag.back() == '/') {
                                             // self-closing tag 
                                             last_end = tag_end + 1;
                                             continue;
                                         }
-                                        char closing_tag_buf[tag_name.size() + 3];
-                                        closing_tag_buf[0] = '<'; closing_tag_buf[1] = '/';
-                                        memcpy(closing_tag_buf + 2, tag_name.data(), tag_name.size());
-                                        closing_tag_buf[tag_name.size() + 2] = '>';
-                                        std::string_view closing_tag = std::string_view(closing_tag_buf, tag_name.size() + 3);
+                                        std::string_view closing_tag = tag_name == "ref" ? "</ref>" : "</nowiki>";
                                         size_t closing_tag_start = find_in_range(article, closing_tag, tag_end + 1);
                                         if (closing_tag_start != std::string::npos) {
                                             last_end = closing_tag_start + closing_tag.size();
@@ -247,10 +241,6 @@ struct PageLinks { int n; int cap; int* ids; };
 PageLinks* links;
 string* titles;
 int page_count;
-uint32_t* rev_counts;
-uint32_t* rev_offsets;
-int32_t* rev_edges;
-uint32_t rev_total_links;
 
 static inline int int_cmp(const void* a, const void* b) {
     int x = *(const int*)a;
@@ -348,85 +338,6 @@ static int bsearch_redir_titles(const string& t) {
     return -1;
 }
 
-static uint32_t* g_indeg;
-static string* g_titles;
-
-static int cmp_indeg_desc(const void* a, const void* b) {
-    int ia = *(const int*)a;
-    int ib = *(const int*)b;
-
-    uint32_t da = g_indeg[ia];
-    uint32_t db = g_indeg[ib];
-
-    if (da != db) return (da < db) ? 1 : -1;  // desc
-
-    if (g_titles[ia] < g_titles[ib]) return -1;
-    if (g_titles[ia] > g_titles[ib]) return 1;
-    return 0;
-}
-
-void renumber_by_indegree() {
-    fprintf(stderr, "Renumbering by indegree...\n");
-
-    uint32_t* indeg = (uint32_t*)GC_malloc(page_count * sizeof(uint32_t));
-    memset(indeg, 0, page_count * sizeof(uint32_t));
-
-    for (int src = 0; src < page_count; src++) {
-        PageLinks* l = links + src;
-        for (int j = 0; j < l->n; j++) {
-            indeg[l->ids[j]]++;
-        }
-    }
-
-    int* order = (int*)GC_malloc(page_count * sizeof(int));
-    for (int i = 0; i < page_count; i++) order[i] = i;
-
-    g_indeg = indeg;
-    g_titles = titles;
-    qsort(order, page_count, sizeof(int), cmp_indeg_desc);
-
-    int* old_to_new = (int*)GC_malloc(page_count * sizeof(int));
-    for (int new_id = 0; new_id < page_count; new_id++) {
-        int old_id = order[new_id];
-        old_to_new[old_id] = new_id;
-    }
-
-    for (int old_src = 0; old_src < page_count; old_src++) {
-        PageLinks* l = links + old_src;
-        for (int j = 0; j < l->n; j++) {
-            l->ids[j] = old_to_new[l->ids[j]];
-        }
-        std::sort(l->ids, l->ids + l->n);
-    }
-
-    if (unredir_edges) {
-        for (uint32_t i = 0; i < unredir_n; i++) {
-            unredir_edges[i].src = (uint32_t)old_to_new[unredir_edges[i].src];
-            unredir_edges[i].dest = (uint32_t)old_to_new[unredir_edges[i].dest];
-        }
-
-        qsort(unredir_edges, (size_t)unredir_n, sizeof(UnredirEdge), unredir_edge_cmp);
-    }
-
-    string* titles_ = (string*)GC_malloc(page_count * sizeof(string));
-    PageLinks* links_ = (PageLinks*)GC_malloc(page_count * sizeof(PageLinks));
-
-    for (int new_id = 0; new_id < page_count; new_id++) {
-        int old_id = order[new_id];
-        titles_[new_id] = titles[old_id];
-        links_[new_id] = links[old_id];
-    }
-
-    GC_free(titles);
-    GC_free(links);
-    titles = titles_;
-    links = links_;
-
-    GC_free(old_to_new);
-    GC_free(order);
-    GC_free(indeg);
-}
-
 int bsearch(std::string title) {
     int l = 0, r = page_count - 1;
     while (l <= r) {
@@ -522,58 +433,6 @@ int trim_empty_pages() {
     return s;
 }
 
-void build_reverse_links() {
-    fprintf(stderr, "Building reverse db...\n");
-
-    rev_counts = (uint32_t*)GC_malloc(page_count * sizeof(uint32_t));
-    memset(rev_counts, 0, page_count * sizeof(uint32_t));
-
-    rev_total_links = 0;
-    for (int src = 0; src < page_count; src++) {
-        PageLinks* l = links + src;
-        rev_total_links += (uint32_t)l->n;
-        for (int j = 0; j < l->n; j++) {
-            int dst = l->ids[j];
-            rev_counts[dst]++;
-        }
-    }
-
-    rev_offsets = (uint32_t*)GC_malloc((page_count + 1) * sizeof(uint32_t));
-    rev_offsets[0] = 0;
-    for (int i = 0; i < page_count; i++) {
-        rev_offsets[i + 1] = rev_offsets[i] + rev_counts[i];
-    }
-
-    rev_edges = (int32_t*)GC_malloc(rev_total_links * sizeof(int32_t));
-
-    {
-        uint32_t* cur = (uint32_t*)GC_malloc(page_count * sizeof(uint32_t));
-        for (int i = 0; i < page_count; i++) cur[i] = rev_offsets[i];
-
-        for (int src = 0; src < page_count; src++) {
-            PageLinks* l = links + src;
-            for (int j = 0; j < l->n; j++) {
-                int dst = l->ids[j];
-                rev_edges[cur[dst]++] = (int32_t)src;
-            }
-        }
-
-        GC_free(cur);
-    }
-
-    // Sort incoming lists for each destination page.
-    for (int dst = 0; dst < page_count; dst++) {
-        uint32_t a = rev_offsets[dst];
-        uint32_t b = rev_offsets[dst + 1];
-        if (b > a + 1) {
-            std::sort(rev_edges + a, rev_edges + b);
-            for (uint32_t k = a + 1; k < b; k++) {
-                assert(rev_edges[k - 1] < rev_edges[k]);
-            }
-        }
-    }
-}
-
 void write_db() {
     fprintf(stderr, "Writing db...\n");
     FILE* f = stdout;
@@ -597,7 +456,11 @@ void write_db() {
         exit(1);
     }
 
-    if (fwrite(&rev_total_links, sizeof(rev_total_links), 1, f) != 1) {
+    uint32_t total_links = 0;
+    for (int i = 0; i < page_count; i++) {
+        total_links += (uint32_t)links[i].n;
+    }
+    if (fwrite(&total_links, sizeof(total_links), 1, f) != 1) {
         perror("total_links");
         exit(1);
     }
@@ -612,23 +475,32 @@ void write_db() {
     }
 
     for (int i = 0; i < page_count; i++) {
-        uint32_t num_links = rev_counts[i];
+        uint16_t num_links = (uint16_t)links[i].n;
         if (fwrite(&num_links, sizeof(num_links), 1, f) != 1) {
             perror("fwrite");
             exit(1);
         }
     }
 
-    for (int dst = 0; dst < page_count; dst++) {
-        uint32_t a = rev_offsets[dst];
-        uint32_t b = rev_offsets[dst + 1];
-        for (uint32_t k = a; k < b; k++) {
-            int32_t src = rev_edges[k];
-            char* p = (char*)&src;
+    {
+        char zeros[8] = {0};
+        int padding_needed = page_count % 4;
+        if (padding_needed) {
+            if (fwrite(zeros, 2, 4-padding_needed, f) != 4-padding_needed) {
+                perror("fwrite");
+                exit(1);
+            }
+        }
+    }
+
+    for (int i = 0; i < page_count; i++) {
+        for (int j = 0; j < links[i].n; j++) {
+            int32_t link = links[i].ids[j];
+            char* p = (char*)&link;
             if (p[3] != 0) {
                 perror("link overflow");
             }
-            if (fwrite(&src, 4, 1, f) != 1) {
+            if (fwrite(&link, 4, 1, f) != 1) {
                 perror("fwrite");
                 exit(1);
             }
@@ -773,7 +645,7 @@ static void build_unredirect_db() {
         string* ll = *links_;
         for (int i = 0; ll[i].p() != nullptr; i++) {
             if (!is_redirect_title(ll[i])) continue;
-            int* c = map_string_int_get_check(&redir_in, ll[i]);
+            int32_t* c = map_string_int_get_check(&redir_in, ll[i]);
             if (c) {
                 (*c)++;
             } else {
@@ -819,8 +691,8 @@ static void build_unredirect_db() {
                 }
 
                 int in = 0;
-                int* p = map_string_int_get_check(&redir_in, ll[i]);
-                if (p) in = *p;
+                int32_t* p = map_string_int_get_check(&redir_in, ll[i]);
+                if (p) in = (int)(*p);
 
                 cand[cand_n].dest = dest;
                 cand[cand_n].redir_len = (uint16_t)redir_len;
@@ -1019,10 +891,6 @@ int main(int argc, char** argv) {
 
     /* build redirect witness table for edges that are only possible via redirects */
     build_unredirect_db();
-
-    renumber_by_indegree();
-
-    build_reverse_links();
 
     write_db();
 
