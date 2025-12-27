@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 
+#include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <set>
 
@@ -296,6 +298,7 @@ void renumber_by_indegree() {
         for (int j = 0; j < l->n; j++) {
             l->ids[j] = old_to_new[l->ids[j]];
         }
+        std::sort(l->ids, l->ids + l->n);
     }
 
     string* titles_ = (string*)GC_malloc(page_count * sizeof(string));
@@ -449,6 +452,18 @@ void build_reverse_links() {
         }
 
         GC_free(cur);
+    }
+
+    // Sort incoming lists for each destination page.
+    for (int dst = 0; dst < page_count; dst++) {
+        uint32_t a = rev_offsets[dst];
+        uint32_t b = rev_offsets[dst + 1];
+        if (b > a + 1) {
+            std::sort(rev_edges + a, rev_edges + b);
+            for (uint32_t k = a + 1; k < b; k++) {
+                assert(rev_edges[k - 1] < rev_edges[k]);
+            }
+        }
     }
 }
 
