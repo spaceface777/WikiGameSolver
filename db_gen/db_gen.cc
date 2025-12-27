@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 
+#include <stdint.h>
+
 #include <algorithm>
 #include <cassert>
 #include <iostream>
@@ -22,7 +24,7 @@ void nop(void* p) { (void)p; }
 #include "map.h"
 
 static int DUMP_DATE = 221201;
-static const int DUMP_FORMAT_VERSION = 3;
+static const int DUMP_FORMAT_VERSION = 4;
 
 map_string_string string_data = new_map_string_string();
 map_string_stringptr link_map = new_map_string_stringptr();
@@ -250,6 +252,102 @@ uint32_t* rev_offsets;
 int32_t* rev_edges;
 uint32_t rev_total_links;
 
+static inline int int_cmp(const void* a, const void* b) {
+    int x = *(const int*)a;
+    int y = *(const int*)b;
+    if (x < y) return -1;
+    if (x > y) return 1;
+    return 0;
+}
+
+static inline int int_bsearch(const int* a, int n, int x) {
+    int l = 0, r = n - 1;
+    while (l <= r) {
+        int m = (l + r) / 2;
+        int v = a[m];
+        if (v == x) return 1;
+        if (v < x) l = m + 1;
+        else r = m - 1;
+    }
+    return 0;
+}
+
+static inline int string_cmp_qsort(const void* a, const void* b) {
+    const string* x = (const string*)a;
+    const string* y = (const string*)b;
+    if (*x < *y) return -1;
+    if (*x > *y) return 1;
+    return 0;
+}
+
+/* ---------------------------------------------
+   unredirect db (built after trimming)
+   --------------------------------------------- */
+
+struct Cand {
+    int dest;
+    uint16_t redir_len;
+    string redir_title;
+    uint32_t redir_in;
+};
+
+struct UnredirTmp {
+    uint32_t src;
+    uint32_t dest;
+    string redir_title;
+};
+
+struct UnredirEdge {
+    uint32_t src;
+    uint32_t dest;
+    uint32_t redir_idx;
+};
+
+static UnredirEdge* unredir_edges = nullptr;
+static uint32_t unredir_n = 0;
+
+static string* redir_titles = nullptr; /* filtered + sorted */
+static uint32_t redir_titles_n = 0;
+static uint32_t redir_titles_bytes = 0;
+
+static inline int cand_cmp(const void* a, const void* b) {
+    const Cand* x = (const Cand*)a;
+    const Cand* y = (const Cand*)b;
+    if (x->dest < y->dest) return -1;
+    if (x->dest > y->dest) return 1;
+    if (x->redir_len < y->redir_len) return -1;
+    if (x->redir_len > y->redir_len) return 1;
+    /* higher incoming first */
+    if (x->redir_in > y->redir_in) return -1;
+    if (x->redir_in < y->redir_in) return 1;
+    if (x->redir_title < y->redir_title) return -1;
+    if (x->redir_title > y->redir_title) return 1;
+    return 0;
+}
+
+static inline int unredir_edge_cmp(const void* a, const void* b) {
+    const UnredirEdge* x = (const UnredirEdge*)a;
+    const UnredirEdge* y = (const UnredirEdge*)b;
+    if (x->src < y->src) return -1;
+    if (x->src > y->src) return 1;
+    if (x->dest < y->dest) return -1;
+    if (x->dest > y->dest) return 1;
+    if (x->redir_idx < y->redir_idx) return -1;
+    if (x->redir_idx > y->redir_idx) return 1;
+    return 0;
+}
+
+static int bsearch_redir_titles(const string& t) {
+    int l = 0, r = (int)redir_titles_n - 1;
+    while (l <= r) {
+        int m = (l + r) / 2;
+        if (redir_titles[m] == t) return m;
+        if (redir_titles[m] < t) l = m + 1;
+        else r = m - 1;
+    }
+    return -1;
+}
+
 static uint32_t* g_indeg;
 static string* g_titles;
 
@@ -299,6 +397,15 @@ void renumber_by_indegree() {
             l->ids[j] = old_to_new[l->ids[j]];
         }
         std::sort(l->ids, l->ids + l->n);
+    }
+
+    if (unredir_edges) {
+        for (uint32_t i = 0; i < unredir_n; i++) {
+            unredir_edges[i].src = (uint32_t)old_to_new[unredir_edges[i].src];
+            unredir_edges[i].dest = (uint32_t)old_to_new[unredir_edges[i].dest];
+        }
+
+        qsort(unredir_edges, (size_t)unredir_n, sizeof(UnredirEdge), unredir_edge_cmp);
     }
 
     string* titles_ = (string*)GC_malloc(page_count * sizeof(string));
@@ -543,12 +650,87 @@ void write_db() {
         }
     }
 
+    /* ------------------------------
+       format v2 extension (append-only):
+       [u32 unredir_n]
+       [u32 redir_titles_n]
+       [u32 redir_titles_bytes]
+       [ (u32 src,u32 dest,u32 redir_idx) * unredir_n ]
+       [ u8 redir_title_len * redir_titles_n ]
+       [ padding to 4 bytes ]
+       [ redir_titles bytes ]
+       ------------------------------ */
+
+    {
+        uint32_t n = unredir_n;
+        uint32_t rt = redir_titles_n;
+        uint32_t rbytes = redir_titles_bytes;
+
+        if (fwrite(&n, sizeof(n), 1, f) != 1) { perror("unredir_n"); exit(1); }
+        if (fwrite(&rt, sizeof(rt), 1, f) != 1) { perror("redir_titles_n"); exit(1); }
+        if (fwrite(&rbytes, sizeof(rbytes), 1, f) != 1) { perror("redir_titles_bytes"); exit(1); }
+
+        for (uint32_t i = 0; i < unredir_n; i++) {
+            if (fwrite(&unredir_edges[i].src, sizeof(uint32_t), 1, f) != 1) { perror("unredir"); exit(1); }
+            if (fwrite(&unredir_edges[i].dest, sizeof(uint32_t), 1, f) != 1) { perror("unredir"); exit(1); }
+            if (fwrite(&unredir_edges[i].redir_idx, sizeof(uint32_t), 1, f) != 1) { perror("unredir"); exit(1); }
+        }
+
+        for (uint32_t i = 0; i < redir_titles_n; i++) {
+            if (redir_titles[i].len > 255) {
+                fprintf(stderr, "redirect title too long for u8 len: %.*s\n",
+                        (int)redir_titles[i].len, (const char*)redir_titles[i].p());
+                exit(1);
+            }
+            uint8_t l = (uint8_t)redir_titles[i].len;
+            if (fwrite(&l, 1, 1, f) != 1) { perror("redir_title_len"); exit(1); }
+        }
+
+        /* pad to 4 bytes */
+        {
+            char zeros[8] = {0};
+            uint32_t pad = (4 - (redir_titles_n & 3)) & 3;
+            if (pad) {
+                if (fwrite(zeros, 1, pad, f) != pad) { perror("redir_title_len_pad"); exit(1); }
+            }
+        }
+
+        for (uint32_t i = 0; i < redir_titles_n; i++) {
+            if (fwrite(redir_titles[i], 1, redir_titles[i].len, f) != redir_titles[i].len) {
+                perror("redir_title_bytes");
+                exit(1);
+            }
+        }
+    }
+
     fflush(f);
     sync();
     GC_free(buf);
 }
 
 static const int MAX_REDIRECT_HOPS = 128;
+
+int resolve_link_id_len(const string& t, int* out_redir_len) {
+    // Follow: t -> redirects[t] -> redirects[...] ... until a real page is found
+    // Returns: final page id, and number of redirect hops taken.
+    std::set<string> seen;
+    string cur = t;
+
+    for (int hop = 0; hop < MAX_REDIRECT_HOPS; ++hop) {
+        int id = bsearch(cur);
+        if (id != -1) {
+            if (out_redir_len) *out_redir_len = hop;
+            return id;
+        }
+
+        string* p = map_string_string_get_check(&redirects, cur);
+        if (!p) return -1;
+
+        if (!seen.insert(cur).second) return -1;
+        cur = *p;
+    }
+    return -1;
+}
 
 int resolve_link_id(const string& t) {
     // Follow: t -> redirects[t] -> redirects[...] ... until a real page is found
@@ -572,6 +754,184 @@ int resolve_link_id(const string& t) {
     }
     // Too many hops → treat as invalid to avoid pathological chains
     return -1;
+}
+
+static inline int is_redirect_title(const string& t) {
+    string* p = map_string_string_get_check(&redirects, t);
+    return p != nullptr;
+}
+
+static void build_unredirect_db() {
+    fprintf(stderr, "Building unredirect db...\n");
+
+    /* pass 1: count incoming links to redirect titles (only from surviving pages) */
+    map_string_int redir_in = new_map_string_int();
+
+    FOR_IN_MAP_STRING_STRINGPTR(link_map, title, links_, {
+        int src = bsearch(title);
+        if (src == -1) continue;
+        string* ll = *links_;
+        for (int i = 0; ll[i].p() != nullptr; i++) {
+            if (!is_redirect_title(ll[i])) continue;
+            int* c = map_string_int_get_check(&redir_in, ll[i]);
+            if (c) {
+                (*c)++;
+            } else {
+                map_string_int_set(&redir_in, ll[i], 1);
+            }
+        }
+    })
+
+    /* pass 2: choose 0/1 redirect witness per (src,dest) when no direct link exists */
+    UnredirTmp* tmp = nullptr;
+    uint32_t tmp_n = 0;
+    uint32_t tmp_cap = 0;
+
+    FOR_IN_MAP_STRING_STRINGPTR(link_map, title, links_, {
+        int src = bsearch(title);
+        if (src == -1) continue;
+
+        /* per-page scratch */
+        int* direct = nullptr;
+        int direct_n = 0;
+        int direct_cap = 0;
+
+        Cand* cand = nullptr;
+        int cand_n = 0;
+        int cand_cap = 0;
+
+        string* ll = *links_;
+        for (int i = 0; ll[i].p() != nullptr; i++) {
+            int redir_len = 0;
+            int dest = resolve_link_id_len(ll[i], &redir_len);
+            if (dest == -1) continue;
+
+            if (redir_len == 0) {
+                if (direct_n == direct_cap) {
+                    direct_cap = direct_cap * 2 + 16;
+                    direct = (int*)GC_realloc(direct, sizeof(int) * direct_cap);
+                }
+                direct[direct_n++] = dest;
+            } else {
+                if (cand_n == cand_cap) {
+                    cand_cap = cand_cap * 2 + 32;
+                    cand = (Cand*)GC_realloc(cand, sizeof(Cand) * cand_cap);
+                }
+
+                int in = 0;
+                int* p = map_string_int_get_check(&redir_in, ll[i]);
+                if (p) in = *p;
+
+                cand[cand_n].dest = dest;
+                cand[cand_n].redir_len = (uint16_t)redir_len;
+                cand[cand_n].redir_title = ll[i]; /* first hop the user clicks */
+                cand[cand_n].redir_in = (uint32_t)in;
+                cand_n++;
+            }
+        }
+
+        if (direct_n) {
+            qsort(direct, (size_t)direct_n, sizeof(int), int_cmp);
+            /* uniq */
+            int j = 0;
+            for (int k = 1; k < direct_n; k++) {
+                if (direct[k] != direct[j]) direct[++j] = direct[k];
+            }
+            direct_n = j + 1;
+        }
+
+        if (cand_n == 0) continue;
+
+        qsort(cand, (size_t)cand_n, sizeof(Cand), cand_cmp);
+
+        /* iterate groups by dest, skip if direct exists, choose best candidate */
+        {
+            int i = 0;
+            while (i < cand_n) {
+                int dest = cand[i].dest;
+                int j = i + 1;
+                while (j < cand_n && cand[j].dest == dest) j++;
+
+                if (!int_bsearch(direct, direct_n, dest)) {
+                    /* pick minimal redirect chain length (sorted), then highest incoming (sorted), then alpha */
+                    if (tmp_n == tmp_cap) {
+                        tmp_cap = tmp_cap * 2 + 1024;
+                        tmp = (UnredirTmp*)GC_realloc(tmp, sizeof(UnredirTmp) * tmp_cap);
+                    }
+                    tmp[tmp_n].src = (uint32_t)src;
+                    tmp[tmp_n].dest = (uint32_t)dest;
+                    tmp[tmp_n].redir_title = cand[i].redir_title;
+                    tmp_n++;
+                }
+
+                i = j;
+            }
+        }
+    })
+
+    fprintf(stderr, "Unredirect tuples (pre-table): %u\n", tmp_n);
+
+    if (tmp_n == 0) {
+        unredir_edges = nullptr;
+        unredir_n = 0;
+        redir_titles = nullptr;
+        redir_titles_n = 0;
+        redir_titles_bytes = 0;
+        return;
+    }
+
+    /* build filtered redirect title table from tmp[].redir_title */
+    {
+        string* r = (string*)GC_malloc(sizeof(string) * tmp_n);
+        for (uint32_t i = 0; i < tmp_n; i++) r[i] = tmp[i].redir_title;
+
+        qsort(r, (size_t)tmp_n, sizeof(string), string_cmp_qsort);
+
+        /* uniq */
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < tmp_n; i++) {
+            if (n == 0 || !(r[i] == r[n - 1])) r[n++] = r[i];
+        }
+
+        redir_titles = (string*)GC_malloc(sizeof(string) * n);
+        redir_titles_n = n;
+        redir_titles_bytes = 0;
+
+        for (uint32_t i = 0; i < n; i++) {
+            redir_titles[i] = r[i];
+            redir_titles_bytes += (uint32_t)redir_titles[i].len;
+        }
+    }
+
+    /* materialize final unredirect edges with redir_idx, then sort */
+    unredir_edges = (UnredirEdge*)GC_malloc(sizeof(UnredirEdge) * tmp_n);
+    unredir_n = tmp_n;
+
+    for (uint32_t i = 0; i < tmp_n; i++) {
+        int ridx = bsearch_redir_titles(tmp[i].redir_title);
+        if (ridx == -1) {
+            fprintf(stderr, "internal error: missing redirect title\n");
+            exit(1);
+        }
+        unredir_edges[i].src = tmp[i].src;
+        unredir_edges[i].dest = tmp[i].dest;
+        unredir_edges[i].redir_idx = (uint32_t)ridx;
+    }
+
+    qsort(unredir_edges, (size_t)unredir_n, sizeof(UnredirEdge), unredir_edge_cmp);
+
+    /* sanity: ensure at most one per (src,dest) */
+    for (uint32_t i = 1; i < unredir_n; i++) {
+        if (unredir_edges[i].src == unredir_edges[i - 1].src &&
+            unredir_edges[i].dest == unredir_edges[i - 1].dest) {
+            fprintf(stderr, "internal error: duplicate unredirect for (%u,%u)\n",
+                    unredir_edges[i].src, unredir_edges[i].dest);
+            exit(1);
+        }
+    }
+
+    fprintf(stderr, "Unredirect edges: %u\n", unredir_n);
+    fprintf(stderr, "Redirect titles used: %u (%u bytes)\n", redir_titles_n, redir_titles_bytes);
 }
 
 int main(int argc, char** argv) {
@@ -656,6 +1016,9 @@ int main(int argc, char** argv) {
         l->n = j + 1;
     }
     fprintf(stderr, "Removed %llu spurious duplicate links\n", duplicates_removed);
+
+    /* build redirect witness table for edges that are only possible via redirects */
+    build_unredirect_db();
 
     renumber_by_indegree();
 
