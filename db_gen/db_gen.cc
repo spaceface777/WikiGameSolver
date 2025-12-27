@@ -4,6 +4,7 @@
 #include <libxml/parser.h>
 #include <libxml/xmlreader.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 #include <iostream>
 #include <set>
@@ -19,7 +20,7 @@ void nop(void* p) { (void)p; }
 #include "map.h"
 
 static int DUMP_DATE = 221201;
-static const int DUMP_FORMAT_VERSION = 2;
+static const int DUMP_FORMAT_VERSION = 3;
 
 map_string_string string_data = new_map_string_string();
 map_string_stringptr link_map = new_map_string_stringptr();
@@ -246,6 +247,75 @@ uint32_t* rev_counts;
 uint32_t* rev_offsets;
 int32_t* rev_edges;
 uint32_t rev_total_links;
+
+static uint32_t* g_indeg;
+static string* g_titles;
+
+static int cmp_indeg_desc(const void* a, const void* b) {
+    int ia = *(const int*)a;
+    int ib = *(const int*)b;
+
+    uint32_t da = g_indeg[ia];
+    uint32_t db = g_indeg[ib];
+
+    if (da != db) return (da < db) ? 1 : -1;  // desc
+
+    if (g_titles[ia] < g_titles[ib]) return -1;
+    if (g_titles[ia] > g_titles[ib]) return 1;
+    return 0;
+}
+
+void renumber_by_indegree() {
+    fprintf(stderr, "Renumbering by indegree...\n");
+
+    uint32_t* indeg = (uint32_t*)GC_malloc(page_count * sizeof(uint32_t));
+    memset(indeg, 0, page_count * sizeof(uint32_t));
+
+    for (int src = 0; src < page_count; src++) {
+        PageLinks* l = links + src;
+        for (int j = 0; j < l->n; j++) {
+            indeg[l->ids[j]]++;
+        }
+    }
+
+    int* order = (int*)GC_malloc(page_count * sizeof(int));
+    for (int i = 0; i < page_count; i++) order[i] = i;
+
+    g_indeg = indeg;
+    g_titles = titles;
+    qsort(order, page_count, sizeof(int), cmp_indeg_desc);
+
+    int* old_to_new = (int*)GC_malloc(page_count * sizeof(int));
+    for (int new_id = 0; new_id < page_count; new_id++) {
+        int old_id = order[new_id];
+        old_to_new[old_id] = new_id;
+    }
+
+    for (int old_src = 0; old_src < page_count; old_src++) {
+        PageLinks* l = links + old_src;
+        for (int j = 0; j < l->n; j++) {
+            l->ids[j] = old_to_new[l->ids[j]];
+        }
+    }
+
+    string* titles_ = (string*)GC_malloc(page_count * sizeof(string));
+    PageLinks* links_ = (PageLinks*)GC_malloc(page_count * sizeof(PageLinks));
+
+    for (int new_id = 0; new_id < page_count; new_id++) {
+        int old_id = order[new_id];
+        titles_[new_id] = titles[old_id];
+        links_[new_id] = links[old_id];
+    }
+
+    GC_free(titles);
+    GC_free(links);
+    titles = titles_;
+    links = links_;
+
+    GC_free(old_to_new);
+    GC_free(order);
+    GC_free(indeg);
+}
 
 int bsearch(std::string title) {
     int l = 0, r = page_count - 1;
@@ -571,6 +641,8 @@ int main(int argc, char** argv) {
         l->n = j + 1;
     }
     fprintf(stderr, "Removed %llu spurious duplicate links\n", duplicates_removed);
+
+    renumber_by_indegree();
 
     build_reverse_links();
 
