@@ -19,7 +19,7 @@ void nop(void* p) { (void)p; }
 #include "map.h"
 
 static int DUMP_DATE = 221201;
-static const int DUMP_FORMAT_VERSION = 1;
+static const int DUMP_FORMAT_VERSION = 2;
 
 map_string_string string_data = new_map_string_string();
 map_string_stringptr link_map = new_map_string_stringptr();
@@ -238,6 +238,10 @@ struct PageLinks { int n; int cap; int* ids; };
 PageLinks* links;
 string* titles;
 int page_count;
+uint32_t* rev_counts;
+uint32_t* rev_offsets;
+int32_t* rev_edges;
+uint32_t rev_total_links;
 
 int bsearch(std::string title) {
     int l = 0, r = page_count - 1;
@@ -334,6 +338,46 @@ int trim_empty_pages() {
     return s;
 }
 
+void build_reverse_links() {
+    fprintf(stderr, "Building reverse db...\n");
+
+    rev_counts = (uint32_t*)GC_malloc(page_count * sizeof(uint32_t));
+    memset(rev_counts, 0, page_count * sizeof(uint32_t));
+
+    rev_total_links = 0;
+    for (int src = 0; src < page_count; src++) {
+        PageLinks* l = links + src;
+        rev_total_links += (uint32_t)l->n;
+        for (int j = 0; j < l->n; j++) {
+            int dst = l->ids[j];
+            rev_counts[dst]++;
+        }
+    }
+
+    rev_offsets = (uint32_t*)GC_malloc((page_count + 1) * sizeof(uint32_t));
+    rev_offsets[0] = 0;
+    for (int i = 0; i < page_count; i++) {
+        rev_offsets[i + 1] = rev_offsets[i] + rev_counts[i];
+    }
+
+    rev_edges = (int32_t*)GC_malloc(rev_total_links * sizeof(int32_t));
+
+    {
+        uint32_t* cur = (uint32_t*)GC_malloc(page_count * sizeof(uint32_t));
+        for (int i = 0; i < page_count; i++) cur[i] = rev_offsets[i];
+
+        for (int src = 0; src < page_count; src++) {
+            PageLinks* l = links + src;
+            for (int j = 0; j < l->n; j++) {
+                int dst = l->ids[j];
+                rev_edges[cur[dst]++] = (int32_t)src;
+            }
+        }
+
+        GC_free(cur);
+    }
+}
+
 void write_db() {
     fprintf(stderr, "Writing db...\n");
     FILE* f = stdout;
@@ -357,11 +401,7 @@ void write_db() {
         exit(1);
     }
 
-    uint32_t total_links = 0;
-    for (int i = 0; i < page_count; i++) {
-        total_links += (uint32_t)links[i].n;
-    }
-    if (fwrite(&total_links, sizeof(total_links), 1, f) != 1) {
+    if (fwrite(&rev_total_links, sizeof(rev_total_links), 1, f) != 1) {
         perror("total_links");
         exit(1);
     }
@@ -376,30 +416,23 @@ void write_db() {
     }
 
     for (int i = 0; i < page_count; i++) {
-        uint16_t num_links = (uint16_t)links[i].n;
+        uint32_t num_links = rev_counts[i];
         if (fwrite(&num_links, sizeof(num_links), 1, f) != 1) {
             perror("fwrite");
             exit(1);
         }
     }
 
-    char zeros[8] = {0};
-    int padding_needed = page_count % 4;
-    if (padding_needed) {
-        if (fwrite(zeros, 2, 4-padding_needed, f) != 4-padding_needed) {
-            perror("fwrite");
-            exit(1);
-        }
-    }
-
-    for (int i = 0; i < page_count; i++) {
-        for (int j = 0; j < links[i].n; j++) {
-            int32_t link = links[i].ids[j];
-            char* p = (char*)&link;
+    for (int dst = 0; dst < page_count; dst++) {
+        uint32_t a = rev_offsets[dst];
+        uint32_t b = rev_offsets[dst + 1];
+        for (uint32_t k = a; k < b; k++) {
+            int32_t src = rev_edges[k];
+            char* p = (char*)&src;
             if (p[3] != 0) {
                 perror("link overflow");
             }
-            if (fwrite(&link, 4, 1, f) != 1) {
+            if (fwrite(&src, 4, 1, f) != 1) {
                 perror("fwrite");
                 exit(1);
             }
@@ -534,6 +567,8 @@ int main(int argc, char** argv) {
         l->n = j + 1;
     }
     fprintf(stderr, "Removed %llu spurious duplicate links\n", duplicates_removed);
+
+    build_reverse_links();
 
     write_db();
 
