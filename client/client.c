@@ -62,7 +62,7 @@ typedef struct Entry Entry;
 
 STATIC void load_mem(const char* path);
 STATIC void load_mem2(char* compressed_buf, long compressed_len);
-STATIC void load_mem3(char* buf);
+STATIC void load_mem3(char* buf, long buf_len);
 
 STATIC Entry* find_entry(string name);
 STATIC Path	  find_path(string start, string target);
@@ -89,6 +89,20 @@ struct Entry {
 STATIC u32	  total_links = 0;
 STATIC int	  nr_entries  = 0;
 STATIC Entry* entries;
+
+typedef struct UnredirEdge {
+	u32 src;
+	u32 dest;
+	u32 redir_idx;
+} UnredirEdge;
+
+STATIC u32		   nr_unredir = 0;
+STATIC UnredirEdge* unredir	  = 0;
+
+STATIC u32	  nr_redir_titles = 0;
+STATIC string* redir_titles	  = 0;
+
+STATIC inline int unredir_lookup(u32 src, u32 dest);
 
 // --- Reverse CSR (incoming edges) -------------------------------------------
 STATIC u32* in_offsets = NULL; // size N+1
@@ -254,10 +268,35 @@ void threadpool_main(void* ptr) {
 			return;
 		}
 
-		while (node != null) {
-			write(data->connfd, STR_PTR(node->data), STR_LEN(node->data));
+		/* First node is always the start page title. Subsequent lines are what to click. */
+		{
+			Node* prev = node;
+			write(data->connfd, STR_PTR(prev->data), STR_LEN(prev->data));
 			write(data->connfd, "\n", 1);
-			node = node->next;
+
+			while ((node = node->next) != null) {
+				Entry* a = find_entry(prev->data);
+				Entry* b = find_entry(node->data);
+				if (a && b) {
+					u32 ai = (u32)(a - entries);
+					u32 bi = (u32)(b - entries);
+					int ridx = unredir_lookup(ai, bi);
+					if (ridx >= 0 && (u32)ridx < nr_redir_titles) {
+						string rt = redir_titles[ridx];
+						write(data->connfd, STR_PTR(rt), STR_LEN(rt));
+						write(data->connfd, " (redirects to ", sizeof(" (redirects to ") - 1);
+						write(data->connfd, STR_PTR(b->title), STR_LEN(b->title));
+						write(data->connfd, ")\n", 2);
+					} else {
+						write(data->connfd, STR_PTR(b->title), STR_LEN(b->title));
+						write(data->connfd, "\n", 1);
+					}
+				} else {
+					write(data->connfd, STR_PTR(node->data), STR_LEN(node->data));
+					write(data->connfd, "\n", 1);
+				}
+				prev = node;
+			}
 		}
 		// send null byte to signal end of transmission
 		write(data->connfd, "\0", 1);
@@ -447,7 +486,7 @@ int main(int argc, char** argv) {
 }
 #endif
 
-#define DUMP_FORMAT_VERSION 1
+#define DUMP_FORMAT_VERSION 2
 STATIC void load_mem(const char* path) {
 	puts("reading db file into memory...");
 
@@ -473,7 +512,11 @@ STATIC void load_mem(const char* path) {
 
 STATIC void load_mem2(char* compressed_buf, long compressed_len) {
 	char* buf = 0;
-#ifndef NO_COMPRESSION
+
+#ifdef NO_COMPRESSION
+	buf = compressed_buf;
+	load_mem3(buf, compressed_len);
+#else
 	{
 		unsigned int magic = *(unsigned int*)compressed_buf;
 		if (magic != *(unsigned int*)"WIKI") {
@@ -513,19 +556,19 @@ STATIC void load_mem2(char* compressed_buf, long compressed_len) {
 
 			buf = output_buffer;
 			free(compressed_buf);
+			load_mem3(buf, (long)output_size);
 		} else {
-#endif
 			buf = compressed_buf;
-#ifndef NO_COMPRESSION
+			load_mem3(buf, compressed_len);
 		}
 	}
-	load_mem3(buf);
 #endif
 }
-STATIC void load_mem3(char* buf) {
+STATIC void load_mem3(char* buf, long buf_len) {
 	puts("Processing data...");
 
 	char* p = buf;
+	char* end = buf + buf_len;
 
 	unsigned int magic = *(unsigned int*)p;
 	p += sizeof(magic);
@@ -537,12 +580,12 @@ STATIC void load_mem3(char* buf) {
 	unsigned int version = *(unsigned int*)p;
 	p += sizeof(version);
 	u8 dump_format = version & 0xff;
-	if (dump_format != DUMP_FORMAT_VERSION) {
-		if (dump_format > DUMP_FORMAT_VERSION) {
-			fputs("error: database file is newer than this program; update your client.\n", stderr);
-		} else {
-			fputs("error: database file is older than this program; update your database.\n", stderr);
-		}
+	if (dump_format > DUMP_FORMAT_VERSION) {
+		fputs("error: database file is newer than this program; update your client.\n", stderr);
+		exit(1);
+	}
+	if (dump_format < 1) {
+		fputs("error: invalid database format.\n", stderr);
 		exit(1);
 	}
 	i32 dump_date = version >> 8;
@@ -591,6 +634,84 @@ STATIC void load_mem3(char* buf) {
 		u16 l	 = STR_LEN(e->title);
 		e->title = STR(p, l);
 		p += l;
+	}
+
+	/* v2 extension: unredirect + redirect-title table (append-only) */
+	nr_unredir = 0;
+	unredir = 0;
+	nr_redir_titles = 0;
+	redir_titles = 0;
+
+	if (dump_format >= 2) {
+		u32 un_n = 0;
+		u32 rt_n = 0;
+		u32 rt_bytes = 0;
+
+		if (p > end || (size_t)(end - p) < 12u) {
+			fputs("error: truncated db (missing v2 footer)\n", stderr);
+			exit(1);
+		}
+
+		memcpy(&un_n, p, sizeof(u32));
+		p += sizeof(u32);
+		memcpy(&rt_n, p, sizeof(u32));
+		p += sizeof(u32);
+		memcpy(&rt_bytes, p, sizeof(u32));
+		p += sizeof(u32);
+
+		nr_unredir = un_n;
+		if (nr_unredir) {
+			size_t need = (size_t)nr_unredir * 12u;
+			if (p > end || (size_t)(end - p) < need) {
+				fputs("error: truncated db (unredirect)\n", stderr);
+				exit(1);
+			}
+			unredir = (UnredirEdge*)malloc(sizeof(UnredirEdge) * (size_t)nr_unredir);
+			for (u32 i = 0; i < nr_unredir; i++) {
+				memcpy(&unredir[i].src, p, sizeof(u32));
+				p += sizeof(u32);
+				memcpy(&unredir[i].dest, p, sizeof(u32));
+				p += sizeof(u32);
+				memcpy(&unredir[i].redir_idx, p, sizeof(u32));
+				p += sizeof(u32);
+			}
+		}
+
+		nr_redir_titles = rt_n;
+		if (nr_redir_titles) {
+			if (p > end || (size_t)(end - p) < (size_t)nr_redir_titles) {
+				fputs("error: truncated db (redir_title_len)\n", stderr);
+				exit(1);
+			}
+
+			u8* lens = (u8*)malloc((size_t)nr_redir_titles);
+			memcpy(lens, p, (size_t)nr_redir_titles);
+			p += nr_redir_titles;
+
+			/* pad to 4 bytes */
+			u32 pad = (4u - (nr_redir_titles & 3u)) & 3u;
+			if (p > end || (size_t)(end - p) < (size_t)pad) {
+				fputs("error: truncated db (redir_title_len pad)\n", stderr);
+				exit(1);
+			}
+			p += pad;
+
+			if (p > end || (size_t)(end - p) < (size_t)rt_bytes) {
+				fputs("error: truncated db (redir_title bytes)\n", stderr);
+				exit(1);
+			}
+
+			redir_titles = (string*)malloc(sizeof(string) * (size_t)nr_redir_titles);
+			for (u32 i = 0; i < nr_redir_titles; i++) {
+				u32 l = (u32)lens[i];
+				redir_titles[i] = STR(p, (int)l);
+				p += l;
+			}
+			free(lens);
+		}
+
+		printf("[info] unredirect entries: %u\n", nr_unredir);
+		printf("[info] redirect titles: %u\n", nr_redir_titles);
 	}
 }
 
@@ -952,6 +1073,33 @@ STATIC Path find_path(string start, string target) {
 	return find_paths_bikpaths(start, target, MAX_DEPTH, 1);
 }
 
+STATIC inline int unredir_lookup(u32 src, u32 dest) {
+	/* unredir is sorted by (src,dest,redir_idx); generator guarantees <=1 per (src,dest) */
+	if (!unredir || nr_unredir == 0) return -1;
+
+	int l = 0;
+	int r = (int)nr_unredir - 1;
+	while (l <= r) {
+		int m = (l + r) / 2;
+		UnredirEdge* e = unredir + m;
+
+		if (e->src < src) {
+			l = m + 1;
+		} else if (e->src > src) {
+			r = m - 1;
+		} else {
+			if (e->dest < dest) {
+				l = m + 1;
+			} else if (e->dest > dest) {
+				r = m - 1;
+			} else {
+				return (int)e->redir_idx;
+			}
+		}
+	}
+	return -1;
+}
+
 STATIC inline void print_path(Path path) {
 	Node* node = path.node;
 	if (!node) {
@@ -961,9 +1109,27 @@ STATIC inline void print_path(Path path) {
 
 	println(SLIT("\n\nShortest path:"));
 
-	while (node != null) {
-		println(SLIT(" -> "), node->data);
-		node = node->next;
+	/* First node is the start page title. Subsequent lines are what to click. */
+	{
+		Node* prev = node;
+		println(SLIT(" -> "), prev->data);
+		while ((node = node->next) != null) {
+			Entry* a = find_entry(prev->data);
+			Entry* b = find_entry(node->data);
+			if (a && b) {
+				u32 ai = (u32)(a - entries);
+				u32 bi = (u32)(b - entries);
+				int ridx = unredir_lookup(ai, bi);
+				if (ridx >= 0 && (u32)ridx < nr_redir_titles) {
+					println(SLIT(" -> "), redir_titles[ridx], SLIT(" (redirects to "), b->title, SLIT(")"));
+				} else {
+					println(SLIT(" -> "), b->title);
+				}
+			} else {
+				println(SLIT(" -> "), node->data);
+			}
+			prev = node;
+		}
 	}
 }
 
