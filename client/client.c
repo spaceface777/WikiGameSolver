@@ -47,7 +47,7 @@
 #endif
 #endif
 
-#define MAX_DEPTH 20
+#define MAX_DEPTH 100
 
 #ifdef __EMSCRIPTEN__
 #define STATIC
@@ -96,11 +96,11 @@ typedef struct UnredirEdge {
 	u32 redir_idx;
 } UnredirEdge;
 
-STATIC u32		   nr_unredir = 0;
-STATIC UnredirEdge* unredir	  = 0;
+STATIC u32			nr_unredir = 0;
+STATIC UnredirEdge* unredir	   = 0;
 
-STATIC u32	  nr_redir_titles = 0;
-STATIC string* redir_titles	  = 0;
+STATIC u32	   nr_redir_titles = 0;
+STATIC string* redir_titles	   = 0;
 
 STATIC inline int unredir_lookup(u32 src, u32 dest);
 
@@ -183,7 +183,7 @@ void completion(const char* buf, linenoiseCompletions* lc) {
 	Entry* first_match = entries + p.start;
 	if ((count != 1) && (STR_LEN(first_match->title) - blen) <= 1) i = 1;
 
-	for (/* i */; i < MAX(count, 100); i++) {
+	for (/* i */; i < MIN(count, 100); i++) {
 		Entry* e = entries + (p.start + i);
 		linenoiseAddCompletionN(lc, STR_PTR(e->title), STR_LEN(e->title));
 	}
@@ -255,7 +255,7 @@ void threadpool_main(void* ptr) {
 	ThreadData* data = (ThreadData*)ptr;
 
 	thread_main(ptr);
-	
+
 	printf("finished a job; %d remaining\n", --nr_jobs);
 
 	Path path = data->path;
@@ -278,8 +278,8 @@ void threadpool_main(void* ptr) {
 				Entry* a = find_entry(prev->data);
 				Entry* b = find_entry(node->data);
 				if (a && b) {
-					u32 ai = (u32)(a - entries);
-					u32 bi = (u32)(b - entries);
+					u32 ai	 = (u32)(a - entries);
+					u32 bi	 = (u32)(b - entries);
 					int ridx = unredir_lookup(ai, bi);
 					if (ridx >= 0 && (u32)ridx < nr_redir_titles) {
 						string rt = redir_titles[ridx];
@@ -567,7 +567,7 @@ STATIC void load_mem2(char* compressed_buf, long compressed_len) {
 STATIC void load_mem3(char* buf, long buf_len) {
 	puts("Processing data...");
 
-	char* p = buf;
+	char* p	  = buf;
 	char* end = buf + buf_len;
 
 	unsigned int magic = *(unsigned int*)p;
@@ -637,14 +637,14 @@ STATIC void load_mem3(char* buf, long buf_len) {
 	}
 
 	/* v2 extension: unredirect + redirect-title table (append-only) */
-	nr_unredir = 0;
-	unredir = 0;
+	nr_unredir		= 0;
+	unredir			= 0;
 	nr_redir_titles = 0;
-	redir_titles = 0;
+	redir_titles	= 0;
 
 	if (dump_format >= 2) {
-		u32 un_n = 0;
-		u32 rt_n = 0;
+		u32 un_n	 = 0;
+		u32 rt_n	 = 0;
 		u32 rt_bytes = 0;
 
 		if (p > end || (size_t)(end - p) < 12u) {
@@ -703,7 +703,7 @@ STATIC void load_mem3(char* buf, long buf_len) {
 
 			redir_titles = (string*)malloc(sizeof(string) * (size_t)nr_redir_titles);
 			for (u32 i = 0; i < nr_redir_titles; i++) {
-				u32 l = (u32)lens[i];
+				u32 l			= (u32)lens[i];
 				redir_titles[i] = STR(p, (int)l);
 				p += l;
 			}
@@ -1080,7 +1080,7 @@ STATIC inline int unredir_lookup(u32 src, u32 dest) {
 	int l = 0;
 	int r = (int)nr_unredir - 1;
 	while (l <= r) {
-		int m = (l + r) / 2;
+		int			 m = (l + r) / 2;
 		UnredirEdge* e = unredir + m;
 
 		if (e->src < src) {
@@ -1117,8 +1117,8 @@ STATIC inline void print_path(Path path) {
 			Entry* a = find_entry(prev->data);
 			Entry* b = find_entry(node->data);
 			if (a && b) {
-				u32 ai = (u32)(a - entries);
-				u32 bi = (u32)(b - entries);
+				u32 ai	 = (u32)(a - entries);
+				u32 bi	 = (u32)(b - entries);
 				int ridx = unredir_lookup(ai, bi);
 				if (ridx >= 0 && (u32)ridx < nr_redir_titles) {
 					println(SLIT(" -> "), redir_titles[ridx], SLIT(" (redirects to "), b->title, SLIT(")"));

@@ -1,4 +1,4 @@
-#if UINTPTR_MAX == 0xffffffffffffffff
+#if UINTPTR_MAX == 0xffffffffffffffff && !defined(USE_FAST_ARRAY)
 
 typedef void* array;
 
@@ -38,6 +38,45 @@ INLINE void array_free(array* str) {
 }
 
 #define IS_NIL(x) (ARR_PTR(x) == 0)
+
+#elif defined(USE_FAST_ARRAY)
+
+typedef struct {
+	void*		   ptr;
+	size_t len;
+} array;
+
+INLINE size_t ARR_LEN(array x) {
+	return x.len;
+}
+
+INLINE void* ARR_PTR(array x) {
+	return x.ptr;
+}
+
+INLINE array ARR(void* ptr, size_t len) {
+	return (array){ptr, len};
+}
+
+INLINE bool array_eq(array a, array b) {
+	if (a.len != b.len) return false;
+	return !memcmp(a.ptr, b.ptr, a.len);
+}
+
+INLINE array array_clone(array s) {
+	char* ptr = (char*)malloc(s.len + 1);
+	memcpy(ptr, s.ptr, s.len);
+	ptr[s.len] = 0;
+	return ARR(ptr, s.len);
+}
+
+INLINE void array_free(array* str) {
+	free(str->ptr);
+	str->ptr = 0;
+	str->len = 0;
+}
+
+#define IS_NIL(x) ((x).ptr == 0)
 
 #else
 

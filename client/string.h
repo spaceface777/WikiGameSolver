@@ -1,20 +1,28 @@
 #if UINTPTR_MAX == 0xffffffffffffffff
 
-typedef char* string;
+// #if defined(USE_FAST_ARRAY)
+
+// #else
+
+
+// #endif
+
+typedef array string;
 
 // create a string literal
-#define SLIT(x) ((string)((uintptr_t)"" x | ((uintptr_t)(sizeof(x) - 1) << 48)))
+// #define SLIT(x) ((string)((uintptr_t)"" x | ((uintptr_t)(sizeof(x) - 1) << 48)))
+#define SLIT(x) (ARR("" x, sizeof(x) - 1))
 
-#define STR_LEN(x) (ARR_LEN((array)(x)))
-#define STR_PTR(x) ((string)ARR_PTR((array)(x)))
+#define STR_LEN(x) ((int)ARR_LEN((x)))
+#define STR_PTR(x) ((const char*)ARR_PTR((array)(x)))
 
-#define STR(x, len) ((string)ARR((array)(x), (len)))
+#define STR(x, len) ((string)ARR((x), (len)))
 
-#define string_eq(a, b) array_eq((array)(a), (array)(b))
+#define string_eq(a, b) array_eq((a), (b))
 
-#define string_clone(s) ((string)array_clone((array)(s)))
+#define string_clone(s) ((string)array_clone((s)))
 
-#define string_free(s) array_free((array*)(s))
+#define string_free(s) array_free((s))
 
 #else
 
