@@ -124,13 +124,20 @@ STATIC void graph_print_path(const Graph* g, const PathIDs* path);
 STATIC void graph_write_path_fd(const Graph* g, int fd, const PathIDs* path);
 STATIC bool graph_find_path_titles(const Graph* g, string start, string target, u8 max_depth, PathIDs* out);
 STATIC int	unredir_lookup(const Graph* g, u32 src, u32 dest);
+STATIC void pagerank_build(Graph* g, int iters, double damp, double eps);
+STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth);
+STATIC void diff_run(const char* old_path, const char* new_path, int topk);
 
 #include "graph.c"
-#include "input.c"
 #include "load.c"
 #include "output.c"
+#include "pagerank.c"
 #include "search.c"
 #include "server.c"
+
+#include "bench_mode.c"
+#include "input.c"
+#include "diff_mode.c"
 
 STATIC void atexit_handler(void) {
 	// Intentionally empty. The process exits and OS reclaims memory.
@@ -143,6 +150,8 @@ STATIC void usage(const char* prog) {
 			"Usage:\n"
 			"  %s [options]                  Interactive mode\n"
 			"  %s [options] START TARGET     Single query\n"
+			"  %s [options] --bench N       Benchmark mode\n"
+			"  %s --diff OLD_DB NEW_DB      Snapshot diff mode\n"
 #ifdef ENABLE_SERVER
 			"  %s [options] --listen PORT    Server mode\n"
 #endif
@@ -160,7 +169,7 @@ STATIC void usage(const char* prog) {
 			"\n"
 			"Notes:\n"
 			"  - Options may be given as --opt=value or --opt value.\n",
-			prog, prog,
+			prog, prog, prog, prog,
 #ifdef ENABLE_SERVER
 			prog,
 #endif
@@ -201,6 +210,11 @@ int main(int argc, char** argv) {
 
 	const char* db_path		  = default_db;
 	u32			max_depth_u32 = (u32)MAX_DEPTH;
+	bool		bench_mode	  = false;
+	u32			bench_iters	  = 0;
+	bool		diff_mode	  = false;
+	const char* diff_old_path = NULL;
+	const char* diff_new_path = NULL;
 
 #ifdef ENABLE_SERVER
 	bool server_mode = false;
@@ -239,6 +253,35 @@ int main(int argc, char** argv) {
 			if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
 				usage(argv[0]);
 				return 0;
+			}
+
+			if (strcmp(a, "-b") == 0 || strncmp(a, "--bench", 7) == 0) {
+				const char* eq = NULL;
+				if (strncmp(a, "--bench", 7) == 0) eq = a + 7;
+				const char* v	= take_opt_value(&i, argc, argv, "--bench", eq);
+				u32			tmp = 0;
+				if (!parse_u32(v, &tmp) || tmp == 0) {
+					fprintf(stderr, "error: invalid --bench '%s' (must be >=1)\n", v);
+					return 2;
+				}
+				bench_mode	= true;
+				bench_iters = tmp;
+				continue;
+			}
+
+			if (strcmp(a, "--diff") == 0) {
+				if (diff_mode) {
+					fprintf(stderr, "error: --diff already specified\n");
+					return 2;
+				}
+				if (i + 2 >= argc) {
+					fprintf(stderr, "error: --diff requires OLD_DB and NEW_DB paths\n");
+					return 2;
+				}
+				diff_mode	  = true;
+				diff_old_path = argv[++i];
+				diff_new_path = argv[++i];
+				continue;
 			}
 
 			// --db or --db=PATH
@@ -302,6 +345,21 @@ int main(int argc, char** argv) {
 		}
 	}
 
+	if (diff_mode && bench_mode) {
+		fprintf(stderr, "error: --diff cannot be combined with --bench\n");
+		return 2;
+	}
+
+	if (diff_mode) {
+		if (pos_n != 0) {
+			fprintf(stderr, "error: START/TARGET not allowed in diff mode\n");
+			usage(argv[0]);
+			return 2;
+		}
+		diff_run(diff_old_path, diff_new_path, 10);
+		return 0;
+	}
+
 	// Load DB (always exactly once)
 	TIME_INIT();
 	graph_load_from_file(&G, db_path);
@@ -319,6 +377,16 @@ int main(int argc, char** argv) {
 		return 0;
 	}
 #endif
+
+	if (bench_mode) {
+		if (pos_n != 0) {
+			fprintf(stderr, "error: no START/TARGET allowed in bench mode\n");
+			usage(argv[0]);
+			return 2;
+		}
+		bench_run(&G, bench_iters, (u8)max_depth_u32);
+		return 0;
+	}
 
 	// Single query mode
 	if (pos_n == 2) {
@@ -366,7 +434,7 @@ int main(int argc, char** argv) {
 
 		println("");
 		timer_end(t);
-		
+
 		string_free(&start);
 		string_free(&target);
 	}

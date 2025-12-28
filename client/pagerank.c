@@ -1,5 +1,5 @@
-// avoid importing/linking math library unnecessarily
-#define fabs(x) ((x) < 0 ? -(x) : (x))
+#include <float.h>
+#include <math.h>
 
 typedef struct {
 	u32	   id;
@@ -122,6 +122,23 @@ STATIC void pagerank_build(Graph* g, int iters, double damp, double eps) {
 	}
 
 	free(nxt);
+
+	// Apply an in-place alpha bias to favor high-PR nodes. The biased scores are
+	// normalized so they still form a proper probability distribution for the
+	// sampler.
+	const double alpha = 1.6;
+	double		 sum   = 0.0;
+	for (u32 i = 0; i < N; i++) {
+		double biased = pow(r[i], alpha);
+		if (biased == 0.0) biased = DBL_MIN;
+		r[i] = biased;
+		sum += biased;
+	}
+	if (sum > 0.0) {
+		double inv = 1.0 / sum;
+		for (u32 i = 0; i < N; i++) r[i] *= inv;
+	}
+
 	g->pagerank = r;
 }
 

@@ -2,8 +2,6 @@
 
 #include "input.h"
 
-#include "pagerank.c"
-
 typedef struct Range {
 	int start, end;
 } Range;

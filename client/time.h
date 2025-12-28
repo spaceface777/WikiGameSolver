@@ -44,38 +44,40 @@ static inline const char* fmt_timebuf(u64 dt, char* buf, size_t sz) {
 
 /* --- Timer struct for scoped timing --- */
 typedef struct {
-	u64 start;
+	u64			start;
 	const char* label;
 } Timer;
 
 static inline Timer timer_begin(const char* label) {
-	Timer t = { .start = get_monotonic_time(), .label = label };
+	Timer t = {.start = get_monotonic_time(), .label = label};
 	return t;
 }
 
 static inline void timer_end(Timer t) {
-	u64 end = get_monotonic_time();
+	u64	 end = get_monotonic_time();
 	char tmp[64];
 	fmt_timebuf(end - t.start, tmp, sizeof(tmp));
 	fprintf(stderr, "[%s] took %s\n", t.label ? t.label : "step", tmp);
 }
 
 /* --- Utility macro for inline profiling --- */
-#define TIME_STEP(label, block)                                      \
-	do {                                                             \
-		u64 __t0 = get_monotonic_time();                             \
-		{ block; }                                                   \
-		u64 __t1 = get_monotonic_time();                             \
-		char __buf[64];                                              \
-		fmt_timebuf(__t1 - __t0, __buf, sizeof(__buf));              \
-		fprintf(stderr, "[%s] finished in %s\n", (label), __buf);    \
+#define TIME_STEP(label, block)                                   \
+	do {                                                          \
+		u64 __t0 = get_monotonic_time();                          \
+		{                                                         \
+			block;                                                \
+		}                                                         \
+		u64	 __t1 = get_monotonic_time();                         \
+		char __buf[64];                                           \
+		fmt_timebuf(__t1 - __t0, __buf, sizeof(__buf));           \
+		fprintf(stderr, "[%s] finished in %s\n", (label), __buf); \
 	} while (0)
 
 /* --- Timestamped log line --- */
 static inline void log_ts(const char* msg) {
 	static u64 base = 0;
 	if (!base) base = get_monotonic_time();
-	u64 now = get_monotonic_time();
+	u64	 now = get_monotonic_time();
 	char tmp[64];
 	fmt_timebuf(now - base, tmp, sizeof(tmp));
 	fprintf(stderr, "[%s] %s\n", tmp, msg);

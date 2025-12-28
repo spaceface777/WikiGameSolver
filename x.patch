@@ -1,0 +1,2896 @@
+diff --git a/bench.c b/bench.c
+deleted file mode 100644
+index a5055b9bf48c8f4bd00472013e7d3604d594ebe0..0000000000000000000000000000000000000000
+--- a/bench.c
++++ /dev/null
+@@ -1,1906 +0,0 @@
+-#include <assert.h>
+-#include <errno.h>
+-#include <float.h>
+-#include <inttypes.h>
+-#include <math.h>
+-#include <stdarg.h>
+-#include <stdbool.h>
+-#include <stdint.h>
+-#include <stdio.h>
+-#include <stdlib.h>
+-#include <string.h>
+-#include <time.h>
+-
+-#if !defined(_WIN32)
+-#include <unistd.h>
+-#endif
+-
+-#if !defined(_WIN32)
+-#include <sys/resource.h>
+-#endif
+-
+-#include "client/util.h"
+-
+-#include "client/array.h"
+-#include "client/string.h"
+-#include "client/time.h"
+-
+-#ifndef NO_COMPRESSION
+-#include "client/lzma.h"
+-#endif
+-
+-#ifndef STATIC
+-#define STATIC static
+-#endif
+-
+-typedef struct Path	 Path;
+-typedef struct Node	 Node;
+-typedef struct Entry Entry;
+-
+-STATIC void sp_fprint_ids(FILE* f, const u32* ids, u32 len);
+-
+-typedef struct {
+-	u32* ids;		// contiguous: cap_paths * stride
+-	u32	 cap_paths; // K
+-	u32	 stride;	// max_depth+2 (safe upper bound for (D+1) + sentinel)
+-} PathsOut;
+-
+-STATIC void pathsout_init(PathsOut* o, u32 cap_paths, u32 max_depth) {
+-	memset(o, 0, sizeof(*o));
+-	o->cap_paths = cap_paths ? cap_paths : 1;
+-	o->stride	 = max_depth + 2;
+-	o->ids		 = (u32*)malloc((size_t)o->cap_paths * (size_t)o->stride * sizeof(u32));
+-	if (!o->ids) {
+-		fprintf(stderr, "error: out of memory allocating PathsOut\n");
+-		exit(1);
+-	}
+-	for (u32 i = 0; i < o->cap_paths * o->stride; i++) o->ids[i] = UINT32_MAX;
+-}
+-
+-STATIC void pathsout_free(PathsOut* o) {
+-	if (!o) return;
+-	free(o->ids);
+-	memset(o, 0, sizeof(*o));
+-}
+-
+-STATIC inline u32* pathsout_row(PathsOut* o, u32 i) {
+-	return o->ids + (size_t)i * (size_t)o->stride;
+-}
+-
+-typedef struct {
+-	u64* w;
+-	u32	 nbits;
+-	u32	 nwords;
+-} Bitset;
+-
+-STATIC Bitset bitset_make(u32 nbits) {
+-	Bitset b = {0};
+-	b.nbits	 = nbits;
+-	b.nwords = (nbits + 63u) / 64u;
+-	b.w		 = (u64*)calloc((size_t)b.nwords, sizeof(u64));
+-	if (!b.w) {
+-		fprintf(stderr, "error: out of memory allocating bitset\n");
+-		exit(1);
+-	}
+-	return b;
+-}
+-
+-STATIC inline bool bitset_get(const Bitset* b, u32 i) {
+-	return (b->w[i >> 6] >> (i & 63u)) & 1ull;
+-}
+-
+-STATIC inline void bitset_set(Bitset* b, u32 i) {
+-	b->w[i >> 6] |= 1ull << (i & 63u);
+-}
+-
+-STATIC inline void bitset_clr(Bitset* b, u32 i) {
+-	b->w[i >> 6] &= ~(1ull << (i & 63u));
+-}
+-
+-typedef struct DFSState {
+-	int idx;
+-	u8	depth;
+-	u8	limit;
+-} DFSState;
+-
+-struct Path {
+-	Node* node;
+-};
+-
+-struct Node {
+-	string data;
+-	Node*  next;
+-};
+-
+-struct Entry {
+-	string title;
+-	array  links;
+-};
+-
+-STATIC void load_mem(char* path);
+-STATIC void load_mem2(char* compressed_buf, long compressed_len);
+-STATIC void load_mem3(char* buf);
+-
+-STATIC Entry* find_entry(string name);
+-STATIC Path	  find_path(string start, string target);
+-STATIC Path	  find_path_bfs(string start, string target, u32 max_depth);
+-STATIC Path	  find_path_bibfs(string start, string target, u32 max_depth);
+-STATIC Path	  find_paths_kshortest(string start, string target, u32 max_depth, u32 max_paths, bool print_paths,
+-								   PathsOut* out_paths, u32* out_npaths);
+-STATIC Path	  find_paths_bikpaths(string start, string target, u32 max_depth, u32 max_paths, bool print_paths,
+-								  PathsOut* out_paths, u32* out_npaths);
+-STATIC void	  path_free(Path* head);
+-STATIC bool	  dfs(Entry* entry, string target, DFSState state, Node* path);
+-
+-STATIC int	  nr_entries  = 0;
+-STATIC u32	  total_links = 0;
+-STATIC Entry* entries;
+-STATIC u8*	  depths;
+-
+-STATIC Path path_from_ids(const u32* ids, u32 len) {
+-	if (len == 0) return (Path){0};
+-
+-	Node* head = NULL;
+-	Node* cur  = NULL;
+-
+-	for (u32 i = 0; i < len; i++) {
+-		Node* n = (Node*)calloc(1, sizeof(Node));
+-		if (!n) {
+-			fprintf(stderr, "error: out of memory building path\n");
+-			exit(1);
+-		}
+-		n->data = string_clone(entries[ids[i]].title);
+-
+-		if (!head) head = n;
+-		else cur->next = n;
+-		cur = n;
+-	}
+-
+-	return (Path){.node = head};
+-}
+-
+-#define DUMP_FORMAT_VERSION 1
+-STATIC void load_mem(char* path) {
+-	puts("reading db file into memory...");
+-
+-	FILE* compressed = fopen(path, "rb");
+-	if (compressed == NULL) {
+-		fprintf(stderr, "error: could not open db file: %s\n", strerror(errno));
+-		exit(1);
+-	}
+-
+-	fseek(compressed, 0, SEEK_END);
+-	long compressed_len = ftell(compressed);
+-	fseek(compressed, 0, SEEK_SET);
+-
+-	char* compressed_buf = malloc(compressed_len);
+-	if ((long)fread(compressed_buf, 1, compressed_len, compressed) != compressed_len) {
+-		fprintf(stderr, "error: could not read db file: %s\n", strerror(errno));
+-		exit(1);
+-	}
+-	fclose(compressed);
+-
+-	load_mem2(compressed_buf, compressed_len);
+-}
+-
+-STATIC void load_mem2(char* compressed_buf, long compressed_len) {
+-	char* buf = 0;
+-#ifndef NO_COMPRESSION
+-	{
+-		unsigned int magic = *(unsigned int*)compressed_buf;
+-		if (magic != *(unsigned int*)"WIKI") {
+-			puts("decompressing db file...");
+-			lzma_stream strm = LZMA_STREAM_INIT;
+-			lzma_ret	ret	 = lzma_stream_decoder(&strm, UINT64_MAX, 0);
+-			if (ret != LZMA_OK) {
+-				printf("Error: Cannot initialize decoder\n");
+-				exit(1);
+-			}
+-
+-			char*  output_buffer = NULL;
+-			size_t output_size	 = 0;
+-			size_t input_pos	 = 0;
+-
+-			const int LZMA_OUT_BUF_SIZE = 1 << 24;
+-
+-			do {
+-				strm.next_in  = (uint8_t*)(compressed_buf + input_pos);
+-				strm.avail_in = (size_t)compressed_len - input_pos;
+-
+-				output_buffer  = (char*)realloc(output_buffer, output_size + (size_t)LZMA_OUT_BUF_SIZE);
+-				strm.next_out  = (uint8_t*)(output_buffer + output_size);
+-				strm.avail_out = (size_t)LZMA_OUT_BUF_SIZE;
+-
+-				ret = lzma_code(&strm, LZMA_RUN);
+-				if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
+-					printf("Error: Decoding failed: %d\n", ret);
+-					exit(1);
+-				}
+-
+-				output_size += (size_t)LZMA_OUT_BUF_SIZE - strm.avail_out;
+-				input_pos += (size_t)(strm.next_in - (uint8_t*)(compressed_buf + input_pos));
+-			} while (ret != LZMA_STREAM_END);
+-
+-			lzma_end(&strm);
+-
+-			buf = output_buffer;
+-			free(compressed_buf);
+-		} else {
+-#endif
+-			buf = compressed_buf;
+-#ifndef NO_COMPRESSION
+-		}
+-	}
+-	load_mem3(buf);
+-#endif
+-}
+-
+-STATIC void load_mem3(char* buf) {
+-	puts("Processing data...");
+-
+-	char* p = buf;
+-
+-	unsigned int magic = *(unsigned int*)p;
+-	p += sizeof(magic);
+-	if (magic != *(unsigned int*)"WIKI") {
+-		fputs("error: invalid magic\n", stderr);
+-		exit(1);
+-	}
+-
+-	unsigned int version = *(unsigned int*)p;
+-	p += sizeof(version);
+-	u8 dump_format = version & 0xff;
+-	if (dump_format != DUMP_FORMAT_VERSION) {
+-		if (dump_format > DUMP_FORMAT_VERSION) {
+-			fputs("error: database file is newer than this program; update your client.\n", stderr);
+-		} else {
+-			fputs("error: database file is older than this program; update your database.\n", stderr);
+-		}
+-		exit(1);
+-	}
+-	int32_t dump_date = (int32_t)(version >> 8);
+-	printf("[info] database file date: 20%02d.%02d.%02d\n", dump_date / 10000, (dump_date / 100) % 100,
+-		   dump_date % 100);
+-	memcpy(&nr_entries, p, sizeof(int32_t));
+-	entries = malloc(sizeof(Entry) * (size_t)nr_entries);
+-	p += sizeof(int32_t);
+-
+-	memcpy(&total_links, p, sizeof(u32));
+-	p += sizeof(u32);
+-	// uint32_t total_title_bytes;
+-	p += sizeof(uint32_t);
+-
+-	for (int i = 0; i < nr_entries; i++) {
+-		Entry* e = &entries[i];
+-
+-		u16 nr_links;
+-		memcpy(&nr_links, p, sizeof(u16));
+-		e->links = ARR(0, nr_links);
+-		p += sizeof(u16);
+-	}
+-
+-	int padding_needed = nr_entries % 4;
+-	if (padding_needed) {
+-		p += sizeof(u16) * (size_t)(4 - padding_needed);
+-	}
+-
+-	for (int i = 0; i < nr_entries; i++) {
+-		Entry* e		= &entries[i];
+-		u16	   nr_links = ARR_LEN(e->links);
+-		e->links		= ARR(p, nr_links);
+-		p += (size_t)nr_links * sizeof(u32);
+-	}
+-	for (int i = 0; i < nr_entries; i++) {
+-		Entry* e = &entries[i];
+-
+-		u16 l;
+-		memcpy(&l, p, sizeof(u16));
+-		p += sizeof(u16);
+-		e->title = STR(0, l);
+-	}
+-	for (int i = 0; i < nr_entries; i++) {
+-		Entry* e = &entries[i];
+-
+-		u16 l	 = STR_LEN(e->title);
+-		e->title = STR(p, l);
+-		p += (size_t)l;
+-	}
+-}
+-
+-STATIC Entry* find_entry(string name) {
+-	const int	len = STR_LEN(name);
+-	const char* ptr = STR_PTR(name);
+-
+-	int l = 0, r = nr_entries - 1;
+-	while (l <= r) {
+-		int	   m = l + (r - l) / 2;
+-		Entry* e = entries + m;
+-
+-		const int	entry_len = STR_LEN(e->title);
+-		const char* entry_ptr = STR_PTR(e->title);
+-
+-		int cmp = memcmp(ptr, entry_ptr, MIN(len, entry_len));
+-		if (cmp == 0) cmp = (len < entry_len) ? -1 : (len > entry_len);
+-		if (cmp == 0) return e;
+-		else if (cmp > 0) l = m + 1;
+-		else if (cmp < 0) r = m - 1;
+-	}
+-	return null;
+-}
+-
+-STATIC Path find_path(string start, string target) {
+-	Entry* start_entry	= find_entry(start);
+-	Entry* target_entry = find_entry(target);
+-	if (!start_entry) {
+-		printf("start page `%.*s` not in the database\n", STR_LEN(start), STR_PTR(start));
+-		return (Path){0};
+-	}
+-	if (!target_entry) {
+-		printf("target page `%.*s` not in the database\n", STR_LEN(target), STR_PTR(target));
+-		return (Path){0};
+-	}
+-
+-	Path path = (Path){HEAP((Node){.data = string_clone(start)})};
+-
+-	for (int depth = 0; depth < 12; depth++) {
+-		DFSState state = (DFSState){.depth = 0, .limit = (u8)depth, .idx = (int)(start_entry - entries)};
+-		if (dfs(start_entry, target, state, path.node)) return path;
+-	}
+-	path_free(&path);
+-	return path;
+-}
+-
+-STATIC inline void path_free(Path* path) {
+-	Node* tmp;
+-	Node* node = path->node;
+-	while (node != null) {
+-		tmp	 = node;
+-		node = node->next;
+-		string_free(&tmp->data);
+-		free(tmp);
+-	}
+-	path->node = 0;
+-}
+-
+-// --- Path verification helpers (for BFS / BiBFS correctness) -----------------
+-STATIC inline bool entry_has_edge(u32 src, u32 dst) {
+-	u16	 outdeg = ARR_LEN(entries[src].links);
+-	u32* L		= (u32*)ARR_PTR(entries[src].links);
+-	for (u16 j = 0; j < outdeg; j++) {
+-		if (L[j] == dst) return true;
+-	}
+-	return false;
+-}
+-
+-STATIC inline u32 ids_len_sentinel(const u32* ids, u32 cap) {
+-	if (!ids) return 0;
+-	for (u32 i = 0; i < cap; i++) {
+-		if (ids[i] == UINT32_MAX) return i;
+-	}
+-	return cap;
+-}
+-
+-// validate_path(src, target, path)
+-// - `path` is an array of node ids terminated by UINT32_MAX.
+-// - Returns true iff:
+-//     - path is non-empty
+-//     - path[0] == src and last == target
+-//     - every hop follows an existing outgoing edge in the ORIGINAL graph.
+-STATIC bool validate_path(u32 src, u32 target, const u32* path) {
+-	if (!path) {
+-		fprintf(stderr, "\n[FATAL] validate_path: null path pointer\n");
+-		return false;
+-	}
+-
+-	u32 N = (u32)nr_entries;
+-	if (src >= N || target >= N) {
+-		fprintf(stderr, "\n[FATAL] validate_path: src/target out of range (src=%u target=%u N=%u)\n", src, target, N);
+-		return false;
+-	}
+-
+-	// PathsOut uses stride=max_depth+1, but single-path algos may be longer.
+-	// Use a generous cap; if sentinel is missing within cap, treat as invalid.
+-	const u32 cap = 1024;
+-	u32		  len = ids_len_sentinel(path, cap);
+-	if (len == 0 || len == cap) {
+-		fprintf(stderr, "\n[FATAL] validate_path: invalid/unterminated path (len=%u cap=%u)\n", len, cap);
+-		fprintf(stderr, "[FATAL] query: `%.*s` -> `%.*s`\n", STR_LEN(entries[src].title), STR_PTR(entries[src].title),
+-				STR_LEN(entries[target].title), STR_PTR(entries[target].title));
+-		return false;
+-	}
+-
+-	if (path[0] != src) {
+-		fprintf(stderr, "\n[FATAL] validate_path: first node mismatch (got=%u expected=%u)\n", path[0], src);
+-		fprintf(stderr, "[FATAL] query: `%.*s` -> `%.*s`\n", STR_LEN(entries[src].title), STR_PTR(entries[src].title),
+-				STR_LEN(entries[target].title), STR_PTR(entries[target].title));
+-		fprintf(stderr, "[FATAL] path: ");
+-		sp_fprint_ids(stderr, path, len);
+-		fputc('\n', stderr);
+-		return false;
+-	}
+-	if (path[len - 1] != target) {
+-		fprintf(stderr, "\n[FATAL] validate_path: last node mismatch (got=%u expected=%u)\n", path[len - 1], target);
+-		fprintf(stderr, "[FATAL] query: `%.*s` -> `%.*s`\n", STR_LEN(entries[src].title), STR_PTR(entries[src].title),
+-				STR_LEN(entries[target].title), STR_PTR(entries[target].title));
+-		fprintf(stderr, "[FATAL] path: ");
+-		sp_fprint_ids(stderr, path, len);
+-		fputc('\n', stderr);
+-		return false;
+-	}
+-
+-	for (u32 i = 0; i + 1 < len; i++) {
+-		u32 u = path[i];
+-		u32 v = path[i + 1];
+-		if (u >= N || v >= N) {
+-			fprintf(stderr, "\n[FATAL] validate_path: node id out of range at hop %u (u=%u v=%u N=%u)\n", i, u, v, N);
+-			fprintf(stderr, "[FATAL] query: `%.*s` -> `%.*s`\n", STR_LEN(entries[src].title),
+-					STR_PTR(entries[src].title), STR_LEN(entries[target].title), STR_PTR(entries[target].title));
+-			fprintf(stderr, "[FATAL] path: ");
+-			sp_fprint_ids(stderr, path, len);
+-			fputc('\n', stderr);
+-			return false;
+-		}
+-		if (!entry_has_edge(u, v)) {
+-			fprintf(stderr, "\n[FATAL] validate_path: missing edge at hop %u: `%.*s` -> `%.*s`\n", i,
+-					STR_LEN(entries[u].title), STR_PTR(entries[u].title), STR_LEN(entries[v].title),
+-					STR_PTR(entries[v].title));
+-			fprintf(stderr, "[FATAL] query: `%.*s` -> `%.*s`\n", STR_LEN(entries[src].title),
+-					STR_PTR(entries[src].title), STR_LEN(entries[target].title), STR_PTR(entries[target].title));
+-			fprintf(stderr, "[FATAL] path: ");
+-			sp_fprint_ids(stderr, path, len);
+-			fputc('\n', stderr);
+-			return false;
+-		}
+-	}
+-	return true;
+-}
+-
+-STATIC u32 path_to_ids_sentinel(u32* out_ids, u32 cap, const Path* p) {
+-	if (!out_ids || cap == 0) return 0;
+-	u32	  len = 0;
+-	Node* x	  = p ? p->node : null;
+-	for (; x != null; x = x->next) {
+-		if (len + 1 >= cap) break;
+-		Entry* e = find_entry(x->data);
+-		if (!e) {
+-			out_ids[0] = UINT32_MAX;
+-			return 0;
+-		}
+-		out_ids[len++] = (u32)(e - entries);
+-	}
+-	out_ids[len] = UINT32_MAX;
+-	return len;
+-}
+-
+-STATIC void validate_paths_distinct_or_die(const char* algo_name, u32 s, u32 t, const PathsOut* out_paths, u32 npaths) {
+-	if (!out_paths || !out_paths->ids) return;
+-	u32 stride = out_paths->stride;
+-
+-	for (u32 i = 0; i < npaths; i++) {
+-		const u32* pi  = out_paths->ids + (size_t)i * (size_t)stride;
+-		u32		   li  = ids_len_sentinel(pi, stride);
+-		bool	   ok  = (li > 0 && li < stride);
+-		bool	   ok2 = ok && validate_path(s, t, pi);
+-		if (!ok2) {
+-			fprintf(stderr, "[FATAL] %s returned an invalid path (idx=%u)\n", algo_name, i);
+-			exit(3);
+-		}
+-	}
+-
+-	for (u32 i = 0; i < npaths; i++) {
+-		const u32* pi = out_paths->ids + (size_t)i * (size_t)stride;
+-		u32		   li = ids_len_sentinel(pi, stride);
+-		for (u32 j = i + 1; j < npaths; j++) {
+-			const u32* pj = out_paths->ids + (size_t)j * (size_t)stride;
+-			u32		   lj = ids_len_sentinel(pj, stride);
+-			if (li != lj) continue;
+-			if (li == 0 || li == stride) continue;
+-			if (memcmp(pi, pj, (size_t)li * sizeof(u32)) == 0) {
+-				fprintf(stderr, "\n[FATAL] %s returned duplicate paths (i=%u j=%u)\n", algo_name, i, j);
+-				fprintf(stderr, "[FATAL] query: `%.*s` -> `%.*s`\n", STR_LEN(entries[s].title),
+-						STR_PTR(entries[s].title), STR_LEN(entries[t].title), STR_PTR(entries[t].title));
+-				fprintf(stderr, "[FATAL] path: ");
+-				sp_fprint_ids(stderr, pi, li);
+-				fputc('\n', stderr);
+-				exit(3);
+-			}
+-		}
+-	}
+-}
+-
+-STATIC inline u32 path_len_nodes(const Path* p) {
+-	u32 n = 0;
+-	for (Node* x = p ? p->node : null; x != null; x = x->next) n++;
+-	return n;
+-}
+-
+-STATIC inline bool path_equal_nodes(const Path* a, const Path* b) {
+-	Node* x = a ? a->node : null;
+-	Node* y = b ? b->node : null;
+-	while (x != null && y != null) {
+-		if (!string_eq(x->data, y->data)) return false;
+-		x = x->next;
+-		y = y->next;
+-	}
+-	return x == null && y == null;
+-}
+-
+-STATIC void path_fprint(FILE* f, const Path* p, u32 max_nodes) {
+-	if (!p || !p->node) {
+-		fputs("(null)", f);
+-		return;
+-	}
+-	u32 i = 0;
+-	for (Node* x = p->node; x != null; x = x->next) {
+-		if (i == max_nodes) {
+-			fputs(" -> ...", f);
+-			return;
+-		}
+-		if (i) fputs(" -> ", f);
+-		fprintf(f, "%.*s", STR_LEN(x->data), STR_PTR(x->data));
+-		i++;
+-	}
+-}
+-
+-STATIC void verify_paths_or_die(const char* algo_name, string start, string target, const Path* expected,
+-								const Path* found) {
+-	u32 elen = path_len_nodes(expected);
+-	u32 flen = path_len_nodes(found);
+-	if (elen != flen) {
+-		fprintf(stderr, "\n[FATAL] %s produced non-shortest length.\n", algo_name);
+-		fprintf(stderr, "[FATAL] query: `%.*s` -> `%.*s`\n", STR_LEN(start), STR_PTR(start), STR_LEN(target),
+-				STR_PTR(target));
+-		fprintf(stderr, "[FATAL] expected_len_nodes=%u  found_len_nodes=%u\n", elen, flen);
+-		fprintf(stderr, "[FATAL] expected_path: ");
+-		path_fprint(stderr, expected, 12);
+-		fputc('\n', stderr);
+-		fprintf(stderr, "[FATAL] found_path:    ");
+-		path_fprint(stderr, found, 12);
+-		fputc('\n', stderr);
+-		exit(3);
+-	}
+-	if (!path_equal_nodes(expected, found)) {
+-		fprintf(stderr, "\n[WARN] %s produced a different shortest path (same length).\n", algo_name);
+-		fprintf(stderr, "[WARN] query: `%.*s` -> `%.*s`\n", STR_LEN(start), STR_PTR(start), STR_LEN(target),
+-				STR_PTR(target));
+-		fprintf(stderr, "[WARN] len_nodes=%u\n", elen);
+-		fprintf(stderr, "[WARN] expected_path: ");
+-		path_fprint(stderr, expected, 12);
+-		fputc('\n', stderr);
+-		fprintf(stderr, "[WARN] found_path:    ");
+-		path_fprint(stderr, found, 12);
+-		fputc('\n', stderr);
+-	}
+-}
+-
+-STATIC bool dfs(Entry* entry, string target, DFSState state, Node* path) {
+-	string node = entry->title;
+-	if (string_eq(node, target)) {
+-		path->data = node;
+-		return true;
+-	}
+-
+-	if (state.limit > state.depth + 1) {
+-		int d			  = state.limit - state.depth;
+-		u8* checked_depth = depths + state.idx;
+-		if (*checked_depth >= d) {
+-			return false;
+-		}
+-		*checked_depth = (u8)d;
+-
+-		if (!path->next) path->next = HEAP((Node){});
+-
+-		u16	 nr_links = ARR_LEN(entry->links);
+-		int* links	  = ARR_PTR(entry->links);
+-		for (int i = 0; i < nr_links; i++) {
+-			int		 newi	   = links[i];
+-			Entry*	 child	   = entries + newi;
+-			DFSState new_state = (DFSState){.depth = (u8)(state.depth + 1), .limit = state.limit, .idx = newi};
+-			if (dfs(child, target, new_state, path->next)) {
+-				string str		 = string_clone(child->title);
+-				path->next->data = str;
+-				return true;
+-			}
+-		}
+-	}
+-	return false;
+-}
+-
+-#define PARENT_NONE UINT32_MAX
+-
+-STATIC Bitset bfs_vis;
+-STATIC u32*	  bfs_q		 = NULL;
+-STATIC u32*	  bfs_parent = NULL;
+-STATIC bool	  bfs_inited = false;
+-
+-STATIC void bfs_init(u32 N) {
+-	if (bfs_inited) return;
+-	bfs_vis	   = bitset_make(N);
+-	bfs_q	   = (u32*)malloc((size_t)N * sizeof(u32));
+-	bfs_parent = (u32*)malloc((size_t)N * sizeof(u32));
+-	if (!bfs_q || !bfs_parent) {
+-		fprintf(stderr, "error: out of memory initializing BFS\n");
+-		exit(1);
+-	}
+-	bfs_inited = true;
+-}
+-
+-STATIC Path find_path_bfs_ids(u32 s, u32 t, u32 max_depth) {
+-	if (s == t) {
+-		u32 ids[1] = {s};
+-		return path_from_ids(ids, 1);
+-	}
+-
+-	u32 head = 0, tail = 0;
+-	u32 depth = 0;
+-
+-	bfs_q[tail++] = s;
+-	bitset_set(&bfs_vis, s);
+-	bfs_parent[s] = PARENT_NONE;
+-
+-	u32 level_end = tail;
+-
+-	bool found = false;
+-	while (head < tail) {
+-		if (depth > max_depth) break;
+-
+-		while (head < level_end) {
+-			u32	 v		= bfs_q[head++];
+-			u16	 outdeg = ARR_LEN(entries[v].links);
+-			u32* L		= (u32*)ARR_PTR(entries[v].links);
+-
+-			for (u16 j = 0; j < outdeg; j++) {
+-				u32 u = L[j];
+-				if (!bitset_get(&bfs_vis, u)) {
+-					bitset_set(&bfs_vis, u);
+-					bfs_parent[u] = v;
+-					bfs_q[tail++] = u;
+-
+-					if (u == t) {
+-						found = true;
+-						goto done;
+-					}
+-				}
+-			}
+-		}
+-
+-		depth++;
+-		level_end = tail;
+-	}
+-
+-done:
+-	Path out = (Path){0};
+-	if (found) {
+-		u32	 tmp_cap = max_depth + 2;
+-		u32* tmp	 = (u32*)malloc((size_t)tmp_cap * sizeof(u32));
+-		if (!tmp) {
+-			fprintf(stderr, "error: out of memory\n");
+-			exit(1);
+-		}
+-
+-		u32 len = 0;
+-		for (u32 x = t; x != PARENT_NONE; x = bfs_parent[x]) {
+-			if (len >= tmp_cap) break;
+-			tmp[len++] = x;
+-			if (x == s) break;
+-		}
+-
+-		for (u32 i = 0; i < len / 2; i++) {
+-			u32 a			 = tmp[i];
+-			tmp[i]			 = tmp[len - 1 - i];
+-			tmp[len - 1 - i] = a;
+-		}
+-
+-		out = path_from_ids(tmp, len);
+-		free(tmp);
+-	}
+-
+-	for (u32 i = 0; i < tail; i++) {
+-		bitset_clr(&bfs_vis, bfs_q[i]);
+-	}
+-
+-	return out;
+-}
+-
+-STATIC Path find_path_bfs(string start, string target, u32 max_depth) {
+-	Entry* se = find_entry(start);
+-	Entry* te = find_entry(target);
+-	if (!se || !te) return (Path){0};
+-
+-	u32 s = (u32)(se - entries);
+-	u32 t = (u32)(te - entries);
+-	return find_path_bfs_ids(s, t, max_depth);
+-}
+-
+-STATIC u32* in_offsets = NULL; // size N+1
+-STATIC u32* in_edges   = NULL; // size total_links
+-STATIC bool rev_inited = false;
+-
+-STATIC void build_reverse_csr(u32 N) {
+-	if (rev_inited) return;
+-	if (total_links == 0) {
+-		fprintf(stderr, "error: total_links missing from db header\n");
+-		exit(1);
+-	}
+-
+-	in_offsets = (u32*)calloc((size_t)N + 1u, sizeof(u32));
+-	in_edges   = (u32*)malloc((size_t)total_links * sizeof(u32));
+-	if (!in_offsets || !in_edges) {
+-		fprintf(stderr, "error: out of memory building reverse CSR\n");
+-		exit(1);
+-	}
+-
+-	for (u32 src = 0; src < N; src++) {
+-		u16	 outdeg = ARR_LEN(entries[src].links);
+-		u32* L		= (u32*)ARR_PTR(entries[src].links);
+-		for (u16 j = 0; j < outdeg; j++) {
+-			u32 dst = L[j];
+-			if (dst < N) in_offsets[dst + 1]++;
+-		}
+-	}
+-
+-	for (u32 i = 1; i <= N; i++) {
+-		in_offsets[i] += in_offsets[i - 1];
+-	}
+-
+-	u32* cur = (u32*)malloc(((size_t)N + 1u) * sizeof(u32));
+-	if (!cur) {
+-		fprintf(stderr, "error: out of memory\n");
+-		exit(1);
+-	}
+-	memcpy(cur, in_offsets, ((size_t)N + 1u) * sizeof(u32));
+-
+-	for (u32 src = 0; src < N; src++) {
+-		u16	 outdeg = ARR_LEN(entries[src].links);
+-		u32* L		= (u32*)ARR_PTR(entries[src].links);
+-		for (u16 j = 0; j < outdeg; j++) {
+-			u32 dst = L[j];
+-			if (dst >= N) continue;
+-			u32 pos		  = cur[dst]++;
+-			in_edges[pos] = src;
+-		}
+-	}
+-
+-	free(cur);
+-	rev_inited = true;
+-}
+-
+-STATIC Bitset bi_vis_f, bi_vis_b;
+-STATIC u32*	  bi_qf		= NULL;
+-STATIC u32*	  bi_qb		= NULL;
+-STATIC u32*	  bi_pf		= NULL; // parent forward: child -> prev
+-STATIC u32*	  bi_pb		= NULL; // parent backward: node -> next toward target
+-STATIC bool	  bi_inited = false;
+-
+-STATIC void bibfs_init(u32 N) {
+-	if (bi_inited) return;
+-	bi_vis_f = bitset_make(N);
+-	bi_vis_b = bitset_make(N);
+-	bi_qf	 = (u32*)malloc((size_t)N * sizeof(u32));
+-	bi_qb	 = (u32*)malloc((size_t)N * sizeof(u32));
+-	bi_pf	 = (u32*)malloc((size_t)N * sizeof(u32));
+-	bi_pb	 = (u32*)malloc((size_t)N * sizeof(u32));
+-	if (!bi_qf || !bi_qb || !bi_pf || !bi_pb) {
+-		fprintf(stderr, "error: out of memory initializing BiBFS\n");
+-		exit(1);
+-	}
+-	bi_inited = true;
+-}
+-
+-STATIC Path find_path_bibfs_ids(u32 s, u32 t, u32 max_depth) {
+-	if (s == t) {
+-		u32 ids[1] = {s};
+-		return path_from_ids(ids, 1);
+-	}
+-
+-	u32 fh = 0, ft = 0, f_level_end = 0;
+-	u32 bh = 0, bt = 0, b_level_end = 0;
+-	u32 df = 0, db = 0;
+-
+-	bi_qf[ft++] = s;
+-	f_level_end = ft;
+-	bitset_set(&bi_vis_f, s);
+-	bi_pf[s] = PARENT_NONE;
+-
+-	bi_qb[bt++] = t;
+-	b_level_end = bt;
+-	bitset_set(&bi_vis_b, t);
+-	bi_pb[t] = PARENT_NONE;
+-
+-	bool found = false;
+-	u32	 meet  = PARENT_NONE;
+-
+-	while (fh < ft && bh < bt) {
+-		if (df + db > max_depth) break;
+-
+-		u32	 f_front		= f_level_end - fh;
+-		u32	 b_front		= b_level_end - bh;
+-		bool expand_forward = (f_front <= b_front);
+-
+-		if (expand_forward) {
+-			while (fh < f_level_end) {
+-				u32	 v		= bi_qf[fh++];
+-				u16	 outdeg = ARR_LEN(entries[v].links);
+-				u32* L		= (u32*)ARR_PTR(entries[v].links);
+-
+-				for (u16 j = 0; j < outdeg; j++) {
+-					u32 u = L[j];
+-					if (!bitset_get(&bi_vis_f, u)) {
+-						bitset_set(&bi_vis_f, u);
+-						bi_pf[u]	= v;
+-						bi_qf[ft++] = u;
+-
+-						if (bitset_get(&bi_vis_b, u)) {
+-							meet  = u;
+-							found = true;
+-							goto done;
+-						}
+-					}
+-				}
+-			}
+-			df++;
+-			f_level_end = ft;
+-		} else {
+-			while (bh < b_level_end) {
+-				u32 v = bi_qb[bh++];
+-
+-				u32 beg = in_offsets[v];
+-				u32 end = in_offsets[v + 1];
+-				for (u32 pos = beg; pos < end; pos++) {
+-					u32 pred = in_edges[pos];
+-					if (!bitset_get(&bi_vis_b, pred)) {
+-						bitset_set(&bi_vis_b, pred);
+-						bi_pb[pred] = v;
+-						bi_qb[bt++] = pred;
+-
+-						if (bitset_get(&bi_vis_f, pred)) {
+-							meet  = pred;
+-							found = true;
+-							goto done;
+-						}
+-					}
+-				}
+-			}
+-			db++;
+-			b_level_end = bt;
+-		}
+-	}
+-
+-done:
+-	Path out = (Path){0};
+-
+-	if (found && meet != PARENT_NONE) {
+-		u32	 cap   = max_depth + 2;
+-		u32* left  = (u32*)malloc((size_t)cap * sizeof(u32));
+-		u32* right = (u32*)malloc((size_t)cap * sizeof(u32));
+-		if (!left || !right) {
+-			fprintf(stderr, "error: out of memory\n");
+-			exit(1);
+-		}
+-
+-		u32 llen = 0;
+-		for (u32 x = meet; x != PARENT_NONE; x = bi_pf[x]) {
+-			if (llen >= cap) break;
+-			left[llen++] = x;
+-			if (x == s) break;
+-		}
+-		for (u32 i = 0; i < llen / 2; i++) {
+-			u32 tmp			   = left[i];
+-			left[i]			   = left[llen - 1 - i];
+-			left[llen - 1 - i] = tmp;
+-		}
+-
+-		u32 rlen = 0;
+-		for (u32 x = bi_pb[meet]; x != PARENT_NONE; x = bi_pb[x]) {
+-			if (rlen >= cap) break;
+-			right[rlen++] = x;
+-			if (x == t) break;
+-		}
+-
+-		u32	 total = llen + rlen;
+-		u32* ids   = (u32*)malloc((size_t)total * sizeof(u32));
+-		if (!ids) {
+-			fprintf(stderr, "error: out of memory\n");
+-			exit(1);
+-		}
+-
+-		memcpy(ids, left, (size_t)llen * sizeof(u32));
+-		memcpy(ids + llen, right, (size_t)rlen * sizeof(u32));
+-		out = path_from_ids(ids, total);
+-
+-		free(ids);
+-		free(left);
+-		free(right);
+-	}
+-
+-	for (u32 i = 0; i < ft; i++) bitset_clr(&bi_vis_f, bi_qf[i]);
+-	for (u32 i = 0; i < bt; i++) bitset_clr(&bi_vis_b, bi_qb[i]);
+-
+-	return out;
+-}
+-
+-STATIC Path find_path_bibfs(string start, string target, u32 max_depth) {
+-	Entry* se = find_entry(start);
+-	Entry* te = find_entry(target);
+-	if (!se || !te) return (Path){0};
+-
+-	u32 s = (u32)(se - entries);
+-	u32 t = (u32)(te - entries);
+-	return find_path_bibfs_ids(s, t, max_depth);
+-}
+-
+-// -----------------------------------------------------------------------------
+-// Enumerate up to MAX_PATHS shortest paths using ds/dt filtering:
+-// 1) BFS from s to compute ds[] (distance from s) and D=ds[t]
+-// 2) Reverse-BFS from t to compute dt[] (distance to t) up to depth D
+-// 3) Enumerate paths on the shortest-path DAG where:
+-//      ds[v] == ds[u] + 1  AND  ds[v] + dt[v] == D
+-// This yields ONLY shortest paths (length D), and is deterministic w.r.t adjacency order.
+-// -----------------------------------------------------------------------------
+-
+-STATIC u8*	sp_ds	  = NULL;
+-STATIC u8*	sp_dt	  = NULL;
+-STATIC u32* sp_qs	  = NULL;
+-STATIC u32* sp_qt	  = NULL;
+-STATIC bool sp_inited = false;
+-
+-STATIC void sp_init(u32 N) {
+-	if (sp_inited) return;
+-	sp_ds = (u8*)malloc((size_t)N * sizeof(u8));
+-	sp_dt = (u8*)malloc((size_t)N * sizeof(u8));
+-	sp_qs = (u32*)malloc((size_t)N * sizeof(u32));
+-	sp_qt = (u32*)malloc((size_t)N * sizeof(u32));
+-	if (!sp_ds || !sp_dt || !sp_qs || !sp_qt) {
+-		fprintf(stderr, "error: out of memory initializing shortest-path enumerator\n");
+-		exit(1);
+-	}
+-	memset(sp_ds, 0xFF, (size_t)N);
+-	memset(sp_dt, 0xFF, (size_t)N);
+-	sp_inited = true;
+-}
+-
+-// BFS (outgoing) from s up to max_depth; returns D=ds[t] or 0xFF if not found within cap.
+-// Also returns the number of visited nodes in *out_vis (for O(#visited) reset).
+-STATIC u8 sp_bfs_ds(u32 s, u32 t, u8 max_depth, u32* out_vis) {
+-	u32 head = 0, tail = 0;
+-	sp_qs[tail++] = s;
+-	sp_ds[s]	  = 0;
+-
+-	while (head < tail) {
+-		u32 v  = sp_qs[head++];
+-		u8	dv = sp_ds[v];
+-		if (v == t) break;
+-		if (dv >= max_depth) continue;
+-
+-		u16	 outdeg = ARR_LEN(entries[v].links);
+-		u32* L		= (u32*)ARR_PTR(entries[v].links);
+-		for (u16 j = 0; j < outdeg; j++) {
+-			u32 u = L[j];
+-			if (sp_ds[u] != 0xFF) continue;
+-			sp_ds[u]	  = (u8)(dv + 1);
+-			sp_qs[tail++] = u;
+-			if (u == t) {
+-				head = tail;
+-				break;
+-			} // early exit
+-		}
+-	}
+-
+-	if (out_vis) *out_vis = tail;
+-	return sp_ds[t];
+-}
+-
+-// Reverse-BFS (incoming edges) from t up to depth D; fills dt[].
+-STATIC void sp_rbfs_dt(u32 t, u8 D, u32* out_vis) {
+-	u32 head = 0, tail = 0;
+-	sp_qt[tail++] = t;
+-	sp_dt[t]	  = 0;
+-
+-	while (head < tail) {
+-		u32 v  = sp_qt[head++];
+-		u8	dv = sp_dt[v];
+-		if (dv >= D) continue;
+-
+-		u32 beg = in_offsets[v];
+-		u32 end = in_offsets[v + 1];
+-		for (u32 pos = beg; pos < end; pos++) {
+-			u32 pred = in_edges[pos];
+-			if (sp_dt[pred] != 0xFF) continue;
+-			sp_dt[pred]	  = (u8)(dv + 1);
+-			sp_qt[tail++] = pred;
+-		}
+-	}
+-
+-	if (out_vis) *out_vis = tail;
+-}
+-
+-STATIC void sp_reset_ds(u32 vis) {
+-	for (u32 i = 0; i < vis; i++) sp_ds[sp_qs[i]] = 0xFF;
+-}
+-
+-STATIC void sp_reset_dt(u32 vis) {
+-	for (u32 i = 0; i < vis; i++) sp_dt[sp_qt[i]] = 0xFF;
+-}
+-
+-STATIC void sp_fprint_ids(FILE* f, const u32* ids, u32 len) {
+-	for (u32 i = 0; i < len; i++) {
+-		if (i) fputs(" -> ", f);
+-		string title = entries[ids[i]].title;
+-		fprintf(f, "%.*s", STR_LEN(title), STR_PTR(title));
+-	}
+-}
+-
+-STATIC inline void sp_store_path(PathsOut* out_paths, u32 idx, const u32* ids, u32 len) {
+-	if (!out_paths || !out_paths->ids) return;
+-	if (idx >= out_paths->cap_paths) return;
+-	if (len > out_paths->stride) {
+-		fprintf(stderr, "\n[FATAL] path length %u exceeds PathsOut stride %u\n", len, out_paths->stride);
+-		exit(3);
+-	}
+-	u32* row = pathsout_row(out_paths, idx);
+-	memcpy(row, ids, (size_t)len * sizeof(u32));
+-	for (u32 i = len; i < out_paths->stride; i++) row[i] = UINT32_MAX;
+-}
+-
+-STATIC void sp_enum_dfs(u32 u, u32 t, u8 D, u32 max_paths, bool print_paths, u32* stack, u8 depth, u32* npaths,
+-						Path* first_path, PathsOut* out_paths) {
+-	if (*npaths >= max_paths) return;
+-
+-	if (u == t) {
+-		u32 idx = (*npaths)++;
+-		// store the explicit path ids (D+1 nodes) for benchmarking/materialization
+-		sp_store_path(out_paths, idx, stack, (u32)depth + 1);
+-		if (first_path && !first_path->node) {
+-			*first_path = path_from_ids(stack, (u32)depth + 1);
+-		}
+-		if (print_paths) {
+-			fprintf(stdout, "[path %u] ", *npaths);
+-			sp_fprint_ids(stdout, stack, (u32)depth + 1);
+-			fputc('\n', stdout);
+-		}
+-		return;
+-	}
+-
+-	u16	 outdeg = ARR_LEN(entries[u].links);
+-	u32* L		= (u32*)ARR_PTR(entries[u].links);
+-	for (u16 j = 0; j < outdeg; j++) {
+-		u32 v	= L[j];
+-		u8	dsv = sp_ds[v];
+-		if (dsv == 0xFF) continue;
+-		// Must advance exactly one layer
+-		if (dsv != (u8)(depth + 1)) continue;
+-		u8 dtv = sp_dt[v];
+-		if (dtv == 0xFF) continue;
+-		// Must be on some shortest path: ds[v] + dt[v] == D
+-		if ((u8)(dsv + dtv) != D) continue;
+-
+-		stack[depth + 1] = v;
+-		sp_enum_dfs(v, t, D, max_paths, print_paths, stack, (u8)(depth + 1), npaths, first_path, out_paths);
+-		if (*npaths >= max_paths) return;
+-	}
+-}
+-
+-STATIC Path find_paths_kshortest(string start, string target, u32 max_depth_u32, u32 max_paths, bool print_paths,
+-								 PathsOut* out_paths, u32* out_npaths) {
+-	if (out_npaths) *out_npaths = 0;
+-	if (max_paths == 0) max_paths = 1;
+-
+-	if (max_depth_u32 > 254) {
+-		fprintf(stderr, "error: maxdepth must be <= 254 for kpaths (uint8 distances)\n");
+-		exit(2);
+-	}
+-	u8 max_depth = (u8)max_depth_u32;
+-
+-	Entry* se = find_entry(start);
+-	Entry* te = find_entry(target);
+-	if (!se || !te) return (Path){0};
+-
+-	u32 s = (u32)(se - entries);
+-	u32 t = (u32)(te - entries);
+-	if (s == t) {
+-		u32 ids[1] = {s};
+-		if (out_npaths) *out_npaths = 1;
+-		return path_from_ids(ids, 1);
+-	}
+-
+-	u32 N = (u32)nr_entries;
+-	sp_init(N);
+-	build_reverse_csr(N); // required for dt[]
+-
+-	u32 vis_s = 0, vis_t = 0;
+-	u8	D = sp_bfs_ds(s, t, max_depth, &vis_s);
+-
+-	Path first	= (Path){0};
+-	u32	 npaths = 0;
+-	// clear output slots (optional, but keeps debug sane)
+-	if (out_paths && out_paths->ids) {
+-		for (u32 i = 0; i < out_paths->cap_paths * out_paths->stride; i++) out_paths->ids[i] = UINT32_MAX;
+-	}
+-
+-	if (D != 0xFF) {
+-		// Fill dt[] only up to depth D.
+-		sp_rbfs_dt(t, D, &vis_t);
+-
+-		// If dt[s] is unset, something is inconsistent (should not happen if ds[t] found)
+-		if (sp_dt[s] == 0xFF) {
+-			// Still reset and return not found
+-			sp_reset_dt(vis_t);
+-			sp_reset_ds(vis_s);
+-			return (Path){0};
+-		}
+-
+-		u32 stack[256];
+-		stack[0] = s;
+-		sp_enum_dfs(s, t, D, max_paths, print_paths, stack, 0, &npaths, &first, out_paths);
+-	}
+-
+-	if (out_npaths) *out_npaths = npaths;
+-
+-	// Reset distances for visited nodes only (no O(N) memset per query)
+-	sp_reset_dt(vis_t);
+-	sp_reset_ds(vis_s);
+-	return first;
+-}
+-
+-// --- bikpaths: store up to K shortest paths (materialized) -------------------
+-// 1) Compute shortest distance D via provable BFS distances (sp_bfs_ds)
+-// 2) Split D into split/suffix and compute:
+-//    - mp_df[]: distance from s (outgoing BFS) up to split
+-//    - mp_db[]: distance to t (reverse BFS via incoming edges) up to suffix
+-// 3) Enumerate paths that strictly follow these layers, emitting up to K.
+-
+-STATIC u8*	mp_df	  = NULL;
+-STATIC u8*	mp_db	  = NULL;
+-STATIC u32* mp_qf	  = NULL;
+-STATIC u32* mp_qb	  = NULL;
+-STATIC bool mp_inited = false;
+-
+-STATIC void mp_init(u32 N) {
+-	if (mp_inited) return;
+-	mp_df = (u8*)malloc((size_t)N * sizeof(u8));
+-	mp_db = (u8*)malloc((size_t)N * sizeof(u8));
+-	mp_qf = (u32*)malloc((size_t)N * sizeof(u32));
+-	mp_qb = (u32*)malloc((size_t)N * sizeof(u32));
+-	if (!mp_df || !mp_db || !mp_qf || !mp_qb) {
+-		fprintf(stderr, "error: out of memory initializing bikpaths\n");
+-		exit(1);
+-	}
+-	memset(mp_df, 0xFF, (size_t)N);
+-	memset(mp_db, 0xFF, (size_t)N);
+-	mp_inited = true;
+-}
+-
+-STATIC u32 mp_bfs_prefix(u32 s, u8 split) {
+-	u32 head = 0, tail = 0;
+-	mp_qf[tail++] = s;
+-	mp_df[s]	  = 0;
+-
+-	while (head < tail) {
+-		u32 u  = mp_qf[head++];
+-		u8	du = mp_df[u];
+-		if (du >= split) continue;
+-		u16	 outdeg = ARR_LEN(entries[u].links);
+-		u32* L		= (u32*)ARR_PTR(entries[u].links);
+-		for (u16 j = 0; j < outdeg; j++) {
+-			u32 v = L[j];
+-			if (mp_df[v] != 0xFF) continue;
+-			mp_df[v]	  = (u8)(du + 1);
+-			mp_qf[tail++] = v;
+-		}
+-	}
+-	return tail;
+-}
+-
+-STATIC u32 mp_rbfs_suffix(u32 t, u8 suffix) {
+-	u32 head = 0, tail = 0;
+-	mp_qb[tail++] = t;
+-	mp_db[t]	  = 0;
+-
+-	while (head < tail) {
+-		u32 v  = mp_qb[head++];
+-		u8	dv = mp_db[v];
+-		if (dv >= suffix) continue;
+-
+-		u32 beg = in_offsets[v];
+-		u32 end = in_offsets[v + 1];
+-		for (u32 pos = beg; pos < end; pos++) {
+-			u32 pred = in_edges[pos];
+-			if (mp_db[pred] != 0xFF) continue;
+-			mp_db[pred]	  = (u8)(dv + 1);
+-			mp_qb[tail++] = pred;
+-		}
+-	}
+-	return tail;
+-}
+-
+-STATIC void mp_reset_df(u32 vis) {
+-	for (u32 i = 0; i < vis; i++) mp_df[mp_qf[i]] = 0xFF;
+-}
+-
+-STATIC void mp_reset_db(u32 vis) {
+-	for (u32 i = 0; i < vis; i++) mp_db[mp_qb[i]] = 0xFF;
+-}
+-
+-typedef struct {
+-	u32		  s, t;
+-	u8		  D, split, suffix;
+-	u32		  max_paths;
+-	bool	  print_paths;
+-	u32		  npaths;
+-	Path	  first;
+-	PathsOut* out_paths;
+-	u32		  pre[256];
+-	u32		  suf[256];
+-} MPEnum;
+-
+-STATIC void mp_suffix_dfs(MPEnum* E, u32 u, u8 rem, u8 idx) {
+-	if (E->npaths >= E->max_paths) return;
+-	if (rem == 0) {
+-		if (u != E->t) return;
+-		u32 ids[256];
+-		u32 len = 0;
+-		for (u32 i = 0; i <= (u32)E->split; i++) ids[len++] = E->pre[i];
+-		for (u32 i = 1; i <= (u32)E->suffix; i++) ids[len++] = E->suf[i];
+-
+-		u32 slot = E->npaths++;
+-		sp_store_path(E->out_paths, slot, ids, len);
+-
+-		if (!E->first.node) E->first = path_from_ids(ids, len);
+-
+-		if (E->print_paths) {
+-			fprintf(stdout, "[path %u] ", E->npaths);
+-			sp_fprint_ids(stdout, ids, len);
+-			fputc('\n', stdout);
+-		}
+-		return;
+-	}
+-
+-	u16	 outdeg = ARR_LEN(entries[u].links);
+-	u32* L		= (u32*)ARR_PTR(entries[u].links);
+-	for (u16 j = 0; j < outdeg; j++) {
+-		u32 v = L[j];
+-		if (mp_db[v] == (u8)(rem - 1)) {
+-			E->suf[idx + 1] = v;
+-			mp_suffix_dfs(E, v, (u8)(rem - 1), (u8)(idx + 1));
+-			if (E->npaths >= E->max_paths) return;
+-		}
+-	}
+-}
+-
+-STATIC void mp_prefix_dfs(MPEnum* E, u32 u, u8 depth) {
+-	if (E->npaths >= E->max_paths) return;
+-	if (depth == E->split) {
+-		if (mp_db[u] == E->suffix) {
+-			E->suf[0] = u;
+-			mp_suffix_dfs(E, u, E->suffix, 0);
+-		}
+-		return;
+-	}
+-	u16	 outdeg = ARR_LEN(entries[u].links);
+-	u32* L		= (u32*)ARR_PTR(entries[u].links);
+-	for (u16 j = 0; j < outdeg; j++) {
+-		u32 v = L[j];
+-		if (mp_df[v] == (u8)(depth + 1)) {
+-			E->pre[depth + 1] = v;
+-			mp_prefix_dfs(E, v, (u8)(depth + 1));
+-			if (E->npaths >= E->max_paths) return;
+-		}
+-	}
+-}
+-
+-STATIC Path find_paths_bikpaths(string start, string target, u32 max_depth_u32, u32 max_paths, bool print_paths,
+-								PathsOut* out_paths, u32* out_npaths) {
+-	if (out_npaths) *out_npaths = 0;
+-	if (max_paths == 0) max_paths = 1;
+-	if (max_depth_u32 > 254) {
+-		fprintf(stderr, "error: maxdepth must be <= 254\n");
+-		exit(2);
+-	}
+-	u8 max_depth = (u8)max_depth_u32;
+-
+-	Entry* se = find_entry(start);
+-	Entry* te = find_entry(target);
+-	if (!se || !te) return (Path){0};
+-	u32 s = (u32)(se - entries);
+-	u32 t = (u32)(te - entries);
+-
+-	u32 N = (u32)nr_entries;
+-	sp_init(N);
+-	build_reverse_csr(N);
+-	mp_init(N);
+-
+-	// clear output slots
+-	if (out_paths && out_paths->ids) {
+-		for (u32 i = 0; i < out_paths->cap_paths * out_paths->stride; i++) out_paths->ids[i] = UINT32_MAX;
+-	}
+-
+-	// 1) provable shortest distance D (via BFS distances)
+-	u32 vis_s = 0;
+-	u8	D	  = sp_bfs_ds(s, t, max_depth, &vis_s);
+-	sp_reset_ds(vis_s);
+-	if (D == 0xFF) return (Path){0};
+-	if (D == 0) {
+-		u32 ids[1] = {s};
+-		sp_store_path(out_paths, 0, ids, 1);
+-		if (out_npaths) *out_npaths = 1;
+-		return path_from_ids(ids, 1);
+-	}
+-
+-	u8 split  = (u8)((D + 1) / 2);
+-	u8 suffix = (u8)(D - split);
+-
+-	u32 vis_f = mp_bfs_prefix(s, split);
+-	u32 vis_b = mp_rbfs_suffix(t, suffix);
+-
+-	MPEnum E	  = {0};
+-	E.s			  = s;
+-	E.t			  = t;
+-	E.D			  = D;
+-	E.split		  = split;
+-	E.suffix	  = suffix;
+-	E.max_paths	  = max_paths;
+-	E.print_paths = print_paths;
+-	E.npaths	  = 0;
+-	E.first		  = (Path){0};
+-	E.out_paths	  = out_paths;
+-	E.pre[0]	  = s;
+-
+-	mp_prefix_dfs(&E, s, 0);
+-
+-	if (out_npaths) *out_npaths = E.npaths;
+-
+-	mp_reset_db(vis_b);
+-	mp_reset_df(vis_f);
+-	return E.first;
+-}
+-
+-static uint64_t rng64(uint64_t* s) {
+-	uint64_t x = *s;
+-	x ^= x >> 12;
+-	x ^= x << 25;
+-	x ^= x >> 27;
+-	*s = x;
+-	return x * 2685821657736338717ULL;
+-}
+-
+-typedef struct {
+-	uint32_t  n;
+-	uint32_t* gid;
+-	uint32_t* alias;
+-	double*	  prob;
+-	uint64_t  rng;
+-} PRSampler;
+-
+-static double rng_double01(uint64_t* s) {
+-	uint64_t r = rng64(s);
+-	return (double)((r >> 11) & ((1ULL << 53) - 1)) * (1.0 / 9007199254740992.0);
+-}
+-
+-static void prsampler_free(PRSampler* S) {
+-	if (!S) return;
+-	free(S->gid);
+-	free(S->alias);
+-	free(S->prob);
+-	memset(S, 0, sizeof(*S));
+-}
+-
+-static int prsampler_build(PRSampler* S, const double* pr, const uint8_t* active, uint32_t N, double alpha,
+-						   uint64_t seed) {
+-	if (!S || !pr || !active) return 0;
+-	if (alpha <= 0.0) alpha = 1.0;
+-
+-	memset(S, 0, sizeof(*S));
+-	S->rng = seed ? seed : 0x9e3779b97f4a7c15ULL;
+-
+-	uint32_t n = 0;
+-	for (uint32_t g = 0; g < N; g++)
+-		if (active[g]) n++;
+-	if (n == 0) return 0;
+-
+-	S->n	 = n;
+-	S->gid	 = (uint32_t*)malloc((size_t)n * sizeof(uint32_t));
+-	S->alias = (uint32_t*)malloc((size_t)n * sizeof(uint32_t));
+-	S->prob	 = (double*)malloc((size_t)n * sizeof(double));
+-	if (!S->gid || !S->alias || !S->prob) {
+-		prsampler_free(S);
+-		return 0;
+-	}
+-
+-	double*	  q		= (double*)malloc((size_t)n * sizeof(double));
+-	uint32_t* small = (uint32_t*)malloc((size_t)n * sizeof(uint32_t));
+-	uint32_t* large = (uint32_t*)malloc((size_t)n * sizeof(uint32_t));
+-	if (!q || !small || !large) {
+-		free(q);
+-		free(small);
+-		free(large);
+-		prsampler_free(S);
+-		return 0;
+-	}
+-
+-	double	 sumw = 0.0;
+-	uint32_t idx  = 0;
+-	for (uint32_t g = 0; g < N; g++) {
+-		if (!active[g]) continue;
+-		S->gid[idx++] = g;
+-
+-		double p = pr[g];
+-		if (p <= 0.0) p = DBL_MIN;
+-		double w = pow(p, alpha);
+-		if (w == 0.0) w = DBL_MIN;
+-		q[idx - 1] = w;
+-		sumw += w;
+-	}
+-
+-	if (!(sumw > 0.0)) {
+-		free(q);
+-		free(small);
+-		free(large);
+-		prsampler_free(S);
+-		return 0;
+-	}
+-
+-	double	 scale = (double)n / sumw;
+-	uint32_t ns = 0, nl = 0;
+-	for (uint32_t i = 0; i < n; i++) {
+-		q[i] *= scale;
+-		if (q[i] < 1.0) small[ns++] = i;
+-		else large[nl++] = i;
+-	}
+-
+-	while (ns && nl) {
+-		uint32_t s = small[--ns];
+-		uint32_t l = large[--nl];
+-
+-		double ps = q[s];
+-		if (ps < 0.0) ps = 0.0;
+-		if (ps > 1.0) ps = 1.0;
+-		S->prob[s]	= (double)ps;
+-		S->alias[s] = l;
+-
+-		q[l] = (q[l] + q[s]) - 1.0;
+-		if (q[l] < 1.0) small[ns++] = l;
+-		else large[nl++] = l;
+-	}
+-
+-	while (nl) {
+-		uint32_t i	= large[--nl];
+-		S->prob[i]	= 1.0f;
+-		S->alias[i] = i;
+-	}
+-	while (ns) {
+-		uint32_t i	= small[--ns];
+-		S->prob[i]	= 1.0f;
+-		S->alias[i] = i;
+-	}
+-
+-	free(q);
+-	free(small);
+-	free(large);
+-	return 1;
+-}
+-
+-static uint32_t random_biased(PRSampler* S) {
+-	uint32_t n = S->n;
+-	uint32_t i = (uint32_t)(rng64(&S->rng) % (uint64_t)n);
+-	double	 u = rng_double01(&S->rng);
+-	uint32_t j = (u < (double)S->prob[i]) ? i : S->alias[i];
+-	return S->gid[j];
+-}
+-
+-static void pagerank_compute(const Entry* E, uint32_t N, int iters, double damp, double eps, double** out_rank) {
+-	if (damp <= 0.0 || damp >= 1.0) damp = 0.85;
+-	if (iters < 1) iters = 1;
+-
+-	double* r	= (double*)malloc((size_t)N * sizeof(double));
+-	double* nxt = (double*)malloc((size_t)N * sizeof(double));
+-	if (!r || !nxt) {
+-		fprintf(stderr, "error: out of memory\n");
+-		exit(1);
+-	}
+-
+-	double init = 1.0 / (double)N;
+-	for (uint32_t i = 0; i < N; i++) r[i] = init;
+-
+-	for (int it = 0; it < iters; it++) {
+-		memset(nxt, 0, (size_t)N * sizeof(double));
+-		double dangling = 0.0;
+-
+-		for (uint32_t src = 0; src < N; src++) {
+-			u16 outdeg = ARR_LEN(E[src].links);
+-			if (outdeg == 0) {
+-				dangling += r[src];
+-				continue;
+-			}
+-			double share = r[src] / (double)outdeg;
+-			u32*   L	 = (u32*)ARR_PTR(E[src].links);
+-			for (u16 j = 0; j < outdeg; j++) {
+-				u32 dst = L[j];
+-				if (dst < N) nxt[dst] += share;
+-			}
+-		}
+-
+-		double base		= (1.0 - damp) / (double)N;
+-		double add_dang = dangling / (double)N;
+-
+-		double diff = 0.0;
+-		for (uint32_t i = 0; i < N; i++) {
+-			double nr = base + damp * (nxt[i] + add_dang);
+-			diff += fabs(nr - r[i]);
+-			r[i] = nr;
+-		}
+-
+-		if (eps > 0.0 && diff < eps) break;
+-	}
+-
+-	free(nxt);
+-	*out_rank = r;
+-}
+-
+-static uint64_t parse_u64_or_die(const char* s, const char* what) {
+-	if (!s || !*s) {
+-		fprintf(stderr, "error: missing %s\n", what);
+-		exit(2);
+-	}
+-	errno				   = 0;
+-	char*			   end = NULL;
+-	unsigned long long v   = strtoull(s, &end, 10);
+-	if (errno != 0 || !end || *end != '\0') {
+-		fprintf(stderr, "error: invalid %s: %s\n", what, s);
+-		exit(2);
+-	}
+-	return (uint64_t)v;
+-}
+-
+-static double parse_f64_or_die(const char* s, const char* what) {
+-	if (!s || !*s) {
+-		fprintf(stderr, "error: missing %s\n", what);
+-		exit(2);
+-	}
+-	errno	   = 0;
+-	char*  end = NULL;
+-	double v   = strtod(s, &end);
+-	if (errno != 0 || !end || *end != '\0' || !isfinite(v)) {
+-		fprintf(stderr, "error: invalid %s: %s\n", what, s);
+-		exit(2);
+-	}
+-	return v;
+-}
+-
+-static int cmp_u64(const void* a, const void* b) {
+-	uint64_t x = *(const uint64_t*)a;
+-	uint64_t y = *(const uint64_t*)b;
+-	if (x < y) return -1;
+-	if (x > y) return 1;
+-	return 0;
+-}
+-
+-static uint64_t percentile_nearest_rank(const uint64_t* sorted, uint32_t n, uint32_t p) {
+-	if (n == 0) return 0;
+-	if (p == 0) return sorted[0];
+-	if (p >= 100) return sorted[n - 1];
+-	uint64_t rank = ((uint64_t)p * (uint64_t)n + 99ULL) / 100ULL; // ceil(p*n/100)
+-	if (rank < 1) rank = 1;
+-	uint64_t idx = rank - 1;
+-	if (idx >= n) idx = n - 1;
+-	return sorted[idx];
+-}
+-
+-static double ns_to_ms(uint64_t ns) {
+-	return (double)ns / 1e6;
+-}
+-
+-static void format_elapsed_mmss_ms(char out[16], uint64_t elapsed_ns) {
+-	uint64_t total_ms = elapsed_ns / 1000000ULL;
+-	uint64_t mm		  = total_ms / 60000ULL;
+-	uint64_t ss		  = (total_ms / 1000ULL) % 60ULL;
+-	uint64_t ms		  = total_ms % 1000ULL;
+-	snprintf(out, 16, "%" PRIu64 ":%02" PRIu64 ".%03" PRIu64, mm, ss, ms);
+-}
+-
+-static void print_spinner_line(uint32_t iter0, uint32_t iters, string start, string target, u64 bench_start_ns) {
+-	static const char* spins[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+-	const uint32_t	   nspins  = (uint32_t)(sizeof(spins) / sizeof(spins[0]));
+-	const char*		   spin	   = spins[nspins ? (iter0 % nspins) : 0];
+-
+-	u64		 now	 = get_monotonic_time();
+-	uint64_t elapsed = (uint64_t)(now - bench_start_ns);
+-	char	 tbuf[16];
+-	format_elapsed_mmss_ms(tbuf, elapsed);
+-
+-	fprintf(stdout, "\x1b[0K\x1b[1K\x1b[2K\r %s %u / %u `%.*s` -> `%.*s` %s", spin, iter0 + 1, iters, STR_LEN(start),
+-			STR_PTR(start), STR_LEN(target), STR_PTR(target), tbuf);
+-	fflush(stdout);
+-}
+-
+-#if !defined(_WIN32)
+-static void print_rusage(const char* label) {
+-	struct rusage ru;
+-	if (getrusage(RUSAGE_SELF, &ru) != 0) return;
+-	// On macOS, ru_maxrss is in bytes. On Linux, it's kilobytes.
+-#if defined(__APPLE__)
+-	ru.ru_maxrss /= 1024;
+-#endif
+-	long		maxrss = ru.ru_maxrss;
+-	const char* unit   = "KB";
+-
+-	if (maxrss > 1024 * 8) {
+-		maxrss /= 1024;
+-		unit = "MB";
+-	}
+-
+-	if (maxrss > 1024 * 8) {
+-		maxrss /= 1024;
+-		unit = "GB";
+-	}
+-
+-	fprintf(stdout, "[mem] %s: ru_maxrss=%ld%s\n", label, maxrss, unit);
+-}
+-#endif
+-
+-int main(int argc, char** argv) {
+-	TIME_INIT();
+-
+-	if (argc < 2) {
+-		fprintf(stderr,
+-				"usage: %s <db.bin|db.xz> [--iters N] [--alpha A] [--seed S]\n"
+-				"       [--algo iddfs|bfs|bibfs|kpaths|bikpaths] [--maxdepth D]\n"
+-				"       [--maxpaths K] [--printpaths]\n",
+-				argv[0]);
+-		return 2;
+-	}
+-
+-	const char* db_path = argv[1];
+-	uint32_t	iters	= 1000;
+-	double		alpha	= 1.6;
+-	uint64_t	seed	= 1234567ULL;
+-
+-	typedef enum { ALGO_IDDFS, ALGO_BFS, ALGO_BIBFS, ALGO_KPATHS, ALGO_BIKPATHS } Algo;
+-	Algo	 algo		 = ALGO_IDDFS;
+-	u32		 max_depth	 = 12;
+-	u32		 max_paths	 = 16;
+-	bool	 print_paths = false;
+-	PathsOut out_paths	 = {0};
+-
+-	for (int i = 2; i < argc; i++) {
+-		if ((strcmp(argv[i], "--iters") == 0 || strcmp(argv[i], "-n") == 0) && i + 1 < argc) {
+-			iters = (uint32_t)parse_u64_or_die(argv[++i], "iters");
+-		} else if (strcmp(argv[i], "--alpha") == 0 && i + 1 < argc) {
+-			alpha = parse_f64_or_die(argv[++i], "alpha");
+-			if (!(alpha > 0.0)) {
+-				fprintf(stderr, "error: alpha must be > 0\n");
+-				return 2;
+-			}
+-		} else if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+-			seed = parse_u64_or_die(argv[++i], "seed");
+-		} else if (strcmp(argv[i], "--algo") == 0 && i + 1 < argc) {
+-			const char* a = argv[++i];
+-			if (strcmp(a, "iddfs") == 0) algo = ALGO_IDDFS;
+-			else if (strcmp(a, "bfs") == 0) algo = ALGO_BFS;
+-			else if (strcmp(a, "bibfs") == 0) algo = ALGO_BIBFS;
+-			else if (strcmp(a, "kpaths") == 0) algo = ALGO_KPATHS;
+-			else if (strcmp(a, "bikpaths") == 0) algo = ALGO_BIKPATHS;
+-			else {
+-				fprintf(stderr, "error: unknown algo: %s\n", a);
+-				return 2;
+-			}
+-		} else if (strcmp(argv[i], "--maxdepth") == 0 && i + 1 < argc) {
+-			max_depth = (u32)parse_u64_or_die(argv[++i], "maxdepth");
+-		} else if (strcmp(argv[i], "--maxpaths") == 0 && i + 1 < argc) {
+-			max_paths = (u32)parse_u64_or_die(argv[++i], "maxpaths");
+-		} else if (strcmp(argv[i], "--printpaths") == 0) {
+-			print_paths = true;
+-		} else {
+-			fprintf(stderr, "error: unknown arg: %s\n", argv[i]);
+-			return 2;
+-		}
+-	}
+-
+-	load_mem((char*)db_path);
+-#if !defined(_WIN32)
+-	print_rusage("after load");
+-#endif
+-
+-	fprintf(stdout, "[bench] entries=%d iters=%u alpha=%.6g seed=%" PRIu64 "\n", nr_entries, iters, alpha, seed);
+-
+-	uint32_t N = (uint32_t)nr_entries;
+-	// NOTE: BFS queue/bitset are needed for ALGO_BFS. Reverse CSR is needed for bibfs/kpaths/bikpaths.
+-	if (algo == ALGO_BFS) {
+-		bfs_init((u32)N);
+-	} else if (algo == ALGO_BIBFS) {
+-		bibfs_init((u32)N);
+-		build_reverse_csr((u32)N);
+-	} else if (algo == ALGO_KPATHS) {
+-		build_reverse_csr((u32)N);
+-		pathsout_init(&out_paths, max_paths, max_depth);
+-	} else if (algo == ALGO_BIKPATHS) {
+-		build_reverse_csr((u32)N);
+-		pathsout_init(&out_paths, max_paths, max_depth);
+-	}
+-	uint8_t* active = (uint8_t*)malloc((size_t)N);
+-	if (!active) {
+-		fprintf(stderr, "error: out of memory\n");
+-		return 1;
+-	}
+-	memset(active, 1, (size_t)N);
+-
+-	fprintf(stdout, "[bench] computing pagerank...\n");
+-	double* pr = NULL;
+-	pagerank_compute(entries, N, 30, 0.85, 0.0, &pr);
+-
+-	fprintf(stdout, "[bench] building sampler...\n");
+-	PRSampler samp;
+-	if (!prsampler_build(&samp, pr, active, N, alpha, seed)) {
+-		fprintf(stderr, "error: failed building sampler\n");
+-		return 1;
+-	}
+-
+-#if !defined(_WIN32)
+-	print_rusage("after pagerank+sampler");
+-#endif
+-
+-	depths = calloc((size_t)nr_entries, sizeof(u8));
+-	if (!depths) {
+-		fprintf(stderr, "error: failed allocating depths\n");
+-		return 1;
+-	}
+-
+-	uint64_t* times = (uint64_t*)malloc((size_t)iters * sizeof(uint64_t));
+-	if (!times) {
+-		fprintf(stderr, "error: out of memory\n");
+-		return 1;
+-	}
+-
+-	double	 mean  = 0.0;
+-	double	 m2	   = 0.0;
+-	uint64_t min_t = UINT64_MAX;
+-	uint64_t max_t = 0;
+-	uint32_t max_s = 0, max_tgt = 0;
+-	uint32_t not_found				= 0;
+-	u64		 total_paths_enumerated = 0;
+-
+-	u64			bench_start = get_monotonic_time();
+-	const char* algo_name	= (algo == ALGO_IDDFS)	  ? "iddfs"
+-							  : (algo == ALGO_BFS)	  ? "bfs"
+-							  : (algo == ALGO_BIBFS)  ? "bibfs"
+-							  : (algo == ALGO_KPATHS) ? "kpaths"
+-													  : "bikpaths";
+-	(void)algo_name;
+-	for (uint32_t i = 0; i < iters; i++) {
+-		uint32_t s = random_biased(&samp);
+-		uint32_t t = random_biased(&samp);
+-		while (t == s) t = random_biased(&samp);
+-
+-		string start  = entries[s].title;
+-		string target = entries[t].title;
+-		print_spinner_line(i, iters, start, target, bench_start);
+-
+-		u64	 t0 = get_monotonic_time();
+-		Path path;
+-		u32	 npaths = 0;
+-		if (algo == ALGO_IDDFS) {
+-			path = find_path(start, target);
+-			// Exact behavior from interactive client loop: clear depths between queries.
+-			memset(depths, 0, (size_t)nr_entries);
+-		} else if (algo == ALGO_BFS) {
+-			path = find_path_bfs(start, target, max_depth);
+-		} else if (algo == ALGO_BIBFS) {
+-			path = find_path_bibfs(start, target, max_depth);
+-		} else if (algo == ALGO_KPATHS) {
+-			path = find_paths_kshortest(start, target, max_depth, max_paths, print_paths, &out_paths, &npaths);
+-			total_paths_enumerated += (u64)npaths;
+-		} else {
+-			path = find_paths_bikpaths(start, target, max_depth, max_paths, print_paths, &out_paths, &npaths);
+-			total_paths_enumerated += (u64)npaths;
+-		}
+-		u64 t1 = get_monotonic_time();
+-
+-		uint64_t dt = (uint64_t)(t1 - t0);
+-		times[i]	= dt;
+-
+-		// Validate returned path(s) without polluting the timing measurement.
+-		if (algo == ALGO_KPATHS || algo == ALGO_BIKPATHS) {
+-			if (npaths > 0) {
+-				validate_paths_distinct_or_die(algo_name, s, t, &out_paths, npaths);
+-			}
+-		} else {
+-			if (path.node) {
+-				u32 ids[1024];
+-				u32 len = path_to_ids_sentinel(ids, (u32)(sizeof(ids) / sizeof(ids[0])), &path);
+-				if (len == 0 || ids[0] == UINT32_MAX) {
+-					fprintf(stderr, "\n[FATAL] %s returned a non-materializable path\n", algo_name);
+-					fprintf(stderr, "[FATAL] query: `%.*s` -> `%.*s`\n", STR_LEN(start), STR_PTR(start),
+-							STR_LEN(target), STR_PTR(target));
+-					fprintf(stderr, "[FATAL] path: ");
+-					path_fprint(stderr, &path, 16);
+-					fputc('\n', stderr);
+-					exit(3);
+-				}
+-				if (!validate_path(s, t, ids)) {
+-					fprintf(stderr, "[FATAL] %s returned an invalid path\n", algo_name);
+-					exit(3);
+-				}
+-			}
+-		}
+-		if (dt < min_t) min_t = dt;
+-		if (dt > max_t) {
+-			max_t	= dt;
+-			max_s	= s;
+-			max_tgt = t;
+-		}
+-
+-		// Welford variance
+-		double x	 = (double)dt;
+-		double delta = x - mean;
+-		mean += delta / (double)(i + 1);
+-		m2 += delta * (x - mean);
+-
+-		// // Correctness verification:
+-		// // For BFS / BiBFS runs, compute an expected shortest path via BFS and compare.
+-		// // - hard error + exit if lengths differ
+-		// // - warning if same length but different actual path
+-		// if (algo != ALGO_IDDFS) {
+-		// 	Path expected = find_path(start, target);
+-		// 	memset(depths, 0, (size_t)nr_entries);
+-		// 	verify_paths_or_die(algo_name, start, target, &expected, &path);
+-		// 	path_free(&expected);
+-		// }
+-
+-		if (!path.node) not_found++;
+-		path_free(&path);
+-	}
+-	fprintf(stderr, "\n");
+-	u64 bench_end = get_monotonic_time();
+-
+-	uint64_t wall = (uint64_t)(bench_end - bench_start);
+-
+-	uint64_t* sorted = (uint64_t*)malloc((size_t)iters * sizeof(uint64_t));
+-	if (!sorted) {
+-		fprintf(stderr, "error: out of memory\n");
+-		return 1;
+-	}
+-	memcpy(sorted, times, (size_t)iters * sizeof(uint64_t));
+-	qsort(sorted, (size_t)iters, sizeof(uint64_t), cmp_u64);
+-
+-	double stdev = 0.0;
+-	if (iters > 1) {
+-		stdev = sqrt(m2 / (double)(iters - 1));
+-	}
+-
+-	uint64_t p10 = percentile_nearest_rank(sorted, iters, 10);
+-	uint64_t p25 = percentile_nearest_rank(sorted, iters, 25);
+-	uint64_t p50 = percentile_nearest_rank(sorted, iters, 50);
+-	uint64_t p75 = percentile_nearest_rank(sorted, iters, 75);
+-	uint64_t p90 = percentile_nearest_rank(sorted, iters, 90);
+-	uint64_t p99 = percentile_nearest_rank(sorted, iters, 99);
+-
+-	fprintf(stdout, "\n[timing] wall_ms=%.3f  qps=%.2f\n", ns_to_ms(wall),
+-			(wall > 0) ? ((double)iters / ((double)wall / 1e9)) : 0.0);
+-	fprintf(stdout, "[timing] mean_ms=%.3f  stdev_ms=%.3f\n", ns_to_ms((uint64_t)llround(mean)),
+-			ns_to_ms((uint64_t)llround(stdev)));
+-	fprintf(stdout, "[timing] min_ms=%.3f  max_ms=%.3f\n", ns_to_ms(min_t), ns_to_ms(max_t));
+-	fprintf(stdout, "[timing] p10_ms=%.3f p25_ms=%.3f p50_ms=%.3f p75_ms=%.3f p90_ms=%.3f p99_ms=%.3f\n", ns_to_ms(p10),
+-			ns_to_ms(p25), ns_to_ms(p50), ns_to_ms(p75), ns_to_ms(p90), ns_to_ms(p99));
+-	fprintf(stdout, "[result] not_found=%u (%.2f%%)\n", not_found,
+-			iters ? (100.0 * (double)not_found / (double)iters) : 0.0);
+-	if (algo == ALGO_KPATHS || algo == ALGO_BIKPATHS) {
+-		double avg = iters ? ((double)total_paths_enumerated / (double)iters) : 0.0;
+-		fprintf(stdout, "[result] avg_paths_enumerated=%.3f (capped at --maxpaths=%u)\n", avg, max_paths);
+-	}
+-
+-	fprintf(stdout, "\n[slowest] dt_ms=%.3f\n", ns_to_ms(max_t));
+-	fprintf(stdout, "[slowest] start=%.*s\n", STR_LEN(entries[max_s].title), STR_PTR(entries[max_s].title));
+-	fprintf(stdout, "[slowest] target=%.*s\n", STR_LEN(entries[max_tgt].title), STR_PTR(entries[max_tgt].title));
+-
+-#if !defined(_WIN32)
+-	print_rusage("after bench");
+-#endif
+-
+-	free(sorted);
+-	free(times);
+-	prsampler_free(&samp);
+-	free(pr);
+-	free(active);
+-	free(depths);
+-	pathsout_free(&out_paths);
+-	return 0;
+-}
+diff --git a/client/bench_mode.c b/client/bench_mode.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..68273a70b1e8dca0feda62213916abae060413ee
+--- /dev/null
++++ b/client/bench_mode.c
+@@ -0,0 +1,166 @@
++#include <float.h>
++#include <math.h>
++
++typedef struct {
++        u32      n;
++        u32*     gid;
++        u32*     alias;
++        float*   prob;
++        uint64_t rng;
++} PRSampler;
++
++STATIC uint64_t rng64(uint64_t* s) {
++        uint64_t x = *s;
++        x ^= x >> 12;
++        x ^= x << 25;
++        x ^= x >> 27;
++        *s = x;
++        return x * 2685821657736338717ULL;
++}
++
++STATIC double rng_double01(uint64_t* s) {
++        uint64_t r = rng64(s);
++        return (double)((r >> 11) & ((1ULL << 53) - 1)) * (1.0 / 9007199254740992.0);
++}
++
++STATIC void prsampler_free(PRSampler* S) {
++        if (!S) return;
++        free(S->gid);
++        free(S->alias);
++        free(S->prob);
++        memset(S, 0, sizeof(*S));
++}
++
++STATIC bool prsampler_build(PRSampler* S, const double* pr, u32 N, uint64_t seed) {
++        if (!S || !pr || N == 0) return false;
++
++        memset(S, 0, sizeof(*S));
++        S->rng = seed ? seed : 0x9e3779b97f4a7c15ULL;
++        S->n   = N;
++
++        S->gid   = (u32*)malloc((size_t)N * sizeof(u32));
++        S->alias = (u32*)malloc((size_t)N * sizeof(u32));
++        S->prob  = (float*)malloc((size_t)N * sizeof(float));
++        if (!S->gid || !S->alias || !S->prob) {
++                        prsampler_free(S);
++                        return false;
++        }
++
++        double* q      = (double*)malloc((size_t)N * sizeof(double));
++        u32*    small = (u32*)malloc((size_t)N * sizeof(u32));
++        u32*    large = (u32*)malloc((size_t)N * sizeof(u32));
++        if (!q || !small || !large) {
++                        free(q);
++                        free(small);
++                        free(large);
++                        prsampler_free(S);
++                        return false;
++        }
++
++        double sum = 0.0;
++        for (u32 i = 0; i < N; i++) {
++                        S->gid[i] = i;
++                        double w  = pr[i];
++                        if (w <= 0.0) w = DBL_MIN;
++                        q[i]          = w;
++                        sum += w;
++        }
++
++        if (!(sum > 0.0)) {
++                        free(q);
++                        free(small);
++                        free(large);
++                        prsampler_free(S);
++                        return false;
++        }
++
++        double   scale = (double)N / sum;
++        u32      ns = 0, nl = 0;
++        for (u32 i = 0; i < N; i++) {
++                        q[i] *= scale;
++                        if (q[i] < 1.0) small[ns++] = i;
++                        else large[nl++] = i;
++        }
++
++        while (ns && nl) {
++                        u32 s = small[--ns];
++                        u32 l = large[--nl];
++
++                        double ps = q[s];
++                        if (ps < 0.0) ps = 0.0;
++                        if (ps > 1.0) ps = 1.0;
++                        S->prob[s]     = (float)ps;
++                        S->alias[s] = l;
++
++                        q[l] = (q[l] + q[s]) - 1.0;
++                        if (q[l] < 1.0) small[ns++] = l;
++                        else large[nl++] = l;
++        }
++
++        while (nl) {
++                        u32 i   = large[--nl];
++                        S->prob[i]  = 1.0f;
++                        S->alias[i] = i;
++        }
++        while (ns) {
++                        u32 i   = small[--ns];
++                        S->prob[i]  = 1.0f;
++                        S->alias[i] = i;
++        }
++
++        free(q);
++        free(small);
++        free(large);
++        return true;
++}
++
++STATIC u32 prsampler_next(PRSampler* S) {
++        u32      i = (u32)(rng64(&S->rng) % (uint64_t)S->n);
++        double u = rng_double01(&S->rng);
++        u32      j = (u < (double)S->prob[i]) ? i : S->alias[i];
++        return S->gid[j];
++}
++
++STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth) {
++        if (!g || iters == 0) return;
++
++        pagerank_build((Graph*)g, 20, 0.85, 0.0001);
++
++        PRSampler samp;
++        if (!prsampler_build(&samp, g->pagerank, g->N, 1234567ULL)) {
++                        fprintf(stderr, "error: failed to build pagerank sampler\n");
++                        return;
++        }
++
++        fprintf(stdout, "[bench] iters=%u max_depth=%u (pagerank alpha=1.6)\n", iters, (unsigned)max_depth);
++
++        u64      bench_start = get_monotonic_time();
++        u32      found       = 0;
++        PathIDs path         = {0};
++
++        for (u32 i = 0; i < iters; i++) {
++                        u32 s = prsampler_next(&samp);
++                        u32 t = prsampler_next(&samp);
++                        while (t == s) t = prsampler_next(&samp);
++
++                        string start  = g->titles[s];
++                        string target = g->titles[t];
++
++                        u64 t0 = get_monotonic_time();
++                        bool ok = graph_find_path_titles(g, start, target, max_depth, &path);
++                        u64 t1 = get_monotonic_time();
++
++                        if (ok) found++;
++                        fprintf(stdout, "[bench %u/%u] %.3f ms %.*s -> %.*s %s\n", i + 1, iters,
++                                        (double)(t1 - t0) / 1e6, STR_LEN(start), STR_PTR(start), STR_LEN(target),
++                                        STR_PTR(target), ok ? "FOUND" : "MISS");
++        }
++
++        u64 bench_end = get_monotonic_time();
++        double wall   = (double)(bench_end - bench_start) / 1e9;
++        double qps    = wall > 0.0 ? (double)iters / wall : 0.0;
++        fprintf(stdout, "[bench] wall=%.3fs qps=%.2f found=%u/%u\n", wall, qps, found, iters);
++
++        prsampler_free(&samp);
++}
++
+diff --git a/client/client.c b/client/client.c
+index a4a6db4036574b48f4357d141cca18d4914f8928..cd48e7debc312d859f186a2ef0302b83941aa276 100644
+--- a/client/client.c
++++ b/client/client.c
+@@ -102,248 +102,314 @@ typedef struct Graph {
+ 	u32		redir_arena_bytes;
+ 	char*	redir_arena;
+ 
+ 	double* pagerank; // length N, NULL if not computed
+ 
+ 	bool validated;
+ } Graph;
+ 
+ typedef struct PathIDs {
+ 	u32 len;		   // number of nodes in path
+ 	u32 ids[PATH_CAP]; // node IDs
+ } PathIDs;
+ 
+ // Global immutable graph after load.
+ STATIC Graph G = {0};
+ 
+ // ----------------------------------------------------------------------------
+ // Shared helpers (declared here, defined in included .c files)
+ // ----------------------------------------------------------------------------
+ STATIC void graph_load_from_file(Graph* g, const char* path);
+ STATIC u32	graph_find_id(const Graph* g, string title); // returns UINT32_MAX if not found
+ STATIC void graph_print_path(const Graph* g, const PathIDs* path);
+ STATIC void graph_write_path_fd(const Graph* g, int fd, const PathIDs* path);
+ STATIC bool graph_find_path_titles(const Graph* g, string start, string target, u8 max_depth, PathIDs* out);
+ STATIC int	unredir_lookup(const Graph* g, u32 src, u32 dest);
++STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth);
++STATIC void diff_run(const char* old_path, const char* new_path, int topk);
+ 
+ #include "graph.c"
+ #include "input.c"
+ #include "load.c"
+ #include "output.c"
++#include "pagerank.c"
+ #include "search.c"
+ #include "server.c"
++#include "bench_mode.c"
++#include "diff_mode.c"
+ 
+ STATIC void atexit_handler(void) {
+ 	// Intentionally empty. The process exits and OS reclaims memory.
+ }
+ 
+ #ifndef __EMSCRIPTEN__
+ 
+ STATIC void usage(const char* prog) {
+ 	fprintf(stderr,
+ 			"Usage:\n"
+-			"  %s [options]                  Interactive mode\n"
+-			"  %s [options] START TARGET     Single query\n"
++                        "  %s [options]                  Interactive mode\n"
++                        "  %s [options] START TARGET     Single query\n"
++                        "  %s [options] --bench N       Benchmark mode\n"
++                        "  %s --diff OLD_DB NEW_DB      Snapshot diff mode\n"
+ #ifdef ENABLE_SERVER
+-			"  %s [options] --listen PORT    Server mode\n"
++                        "  %s [options] --listen PORT    Server mode\n"
+ #endif
+ 			"\n"
+ 			"Options:\n"
+ 			"  -d, --db PATH           Database file to load (default: db.bin or db.unc)\n"
+ 			"  -m, --max-depth N       Max search depth (1..254). Default: %d\n"
+ #ifdef ENABLE_SERVER
+ 			"  -l, --listen PORT        Listen on PORT (1..65535)\n"
+ #endif
+ #ifdef ENABLE_PRETTY_INPUT
+ 			"      --no-pretty          Disable interactive completion/hints\n"
+ #endif
+-			"  -h, --help              Show this help\n"
+-			"\n"
+-			"Notes:\n"
+-			"  - Options may be given as --opt=value or --opt value.\n",
+-			prog, prog,
++                        "  -h, --help              Show this help\n"
++                        "\n"
++                        "Notes:\n"
++                        "  - Options may be given as --opt=value or --opt value.\n",
++                        prog, prog, prog, prog,
+ #ifdef ENABLE_SERVER
+-			prog,
++                        prog,
+ #endif
+-			(int)MAX_DEPTH);
++                        (int)MAX_DEPTH);
+ }
+ 
+ STATIC bool parse_u32(const char* s, u32* out) {
+ 	if (!s || !*s) return false;
+ 	char* end		= NULL;
+ 	errno			= 0;
+ 	unsigned long v = strtoul(s, &end, 10);
+ 	if (errno != 0 || end == s || *end != '\0') return false;
+ 	if (v > 0xFFFFFFFFul) return false;
+ 	*out = (u32)v;
+ 	return true;
+ }
+ 
+ STATIC const char* take_opt_value(int* i, int argc, char** argv, const char* opt, const char* eq) {
+ 	if (eq && eq[0] == '=') {
+ 		// --opt=value form
+ 		return eq + 1;
+ 	}
+ 	// --opt value form
+ 	if (*i + 1 >= argc) {
+ 		fprintf(stderr, "error: missing value for %s\n", opt);
+ 		exit(2);
+ 	}
+ 	(*i)++;
+ 	return argv[*i];
+ }
+ 
+ int main(int argc, char** argv) {
+ #ifdef NO_COMPRESSION
+ 	const char* default_db = "db.unc";
+ #else
+ 	const char* default_db = "db.bin";
+ #endif
+ 
+ 	const char* db_path		  = default_db;
+ 	u32			max_depth_u32 = (u32)MAX_DEPTH;
++	bool			bench_mode    = false;
++	u32			bench_iters   = 0;
++	bool			diff_mode     = false;
++	const char* diff_old_path             = NULL;
++	const char* diff_new_path             = NULL;
+ 
+ #ifdef ENABLE_SERVER
+ 	bool server_mode = false;
+ 	u32	 listen_port = 0;
+ #endif
+ 
+ #ifdef ENABLE_PRETTY_INPUT
+ 	bool enable_pretty = true;
+ #endif
+ 
+ 	// Collect positional args after options
+ 	const char* pos[2] = {0, 0};
+ 	int			pos_n  = 0;
+ 
+ 	// Parse argv
+ 	for (int i = 1; i < argc; i++) {
+ 		const char* a = argv[i];
+ 
+ 		if (!a || !*a) continue;
+ 
+ 		// Stop parsing options after "--"
+ 		if (strcmp(a, "--") == 0) {
+ 			for (i = i + 1; i < argc; i++) {
+ 				if (pos_n < 2) pos[pos_n++] = argv[i];
+ 				else {
+ 					fprintf(stderr, "error: too many positional arguments\n");
+ 					usage(argv[0]);
+ 					return 2;
+ 				}
+ 			}
+ 			break;
+ 		}
+ 
+-		if (a[0] == '-') {
+-			// Options
+-			if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
+-				usage(argv[0]);
+-				return 0;
+-			}
+-
+-			// --db or --db=PATH
+-			if (strcmp(a, "-d") == 0 || strncmp(a, "--db", 4) == 0) {
+-				const char* eq = NULL;
+-				if (strncmp(a, "--db", 4) == 0) eq = a + 4; // may be "" or "=..."
++                if (a[0] == '-') {
++                        // Options
++                        if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
++                                usage(argv[0]);
++                                return 0;
++                        }
++
++                        if (strcmp(a, "-b") == 0 || strncmp(a, "--bench", 7) == 0) {
++                                const char* eq = NULL;
++                                if (strncmp(a, "--bench", 7) == 0) eq = a + 7;
++                                const char* v   = take_opt_value(&i, argc, argv, "--bench", eq);
++                                u32                     tmp = 0;
++                                if (!parse_u32(v, &tmp) || tmp == 0) {
++                                        fprintf(stderr, "error: invalid --bench '%s' (must be >=1)\n", v);
++                                        return 2;
++                                }
++                                bench_mode  = true;
++                                bench_iters = tmp;
++                                continue;
++                        }
++
++                        if (strcmp(a, "--diff") == 0) {
++                                if (diff_mode) {
++                                        fprintf(stderr, "error: --diff already specified\n");
++                                        return 2;
++                                }
++                                if (i + 2 >= argc) {
++                                        fprintf(stderr, "error: --diff requires OLD_DB and NEW_DB paths\n");
++                                        return 2;
++                                }
++                                diff_mode     = true;
++                                diff_old_path = argv[++i];
++                                diff_new_path = argv[++i];
++                                continue;
++                        }
++
++                        // --db or --db=PATH
++                        if (strcmp(a, "-d") == 0 || strncmp(a, "--db", 4) == 0) {
++                                const char* eq = NULL;
++                                if (strncmp(a, "--db", 4) == 0) eq = a + 4; // may be "" or "=..."
+ 				const char* v = take_opt_value(&i, argc, argv, "--db", eq);
+ 				db_path		  = v;
+ 				continue;
+ 			}
+ 
+ 			// --max-depth or --max-depth=N
+ 			if (strcmp(a, "-m") == 0 || strncmp(a, "--max-depth", 11) == 0) {
+ 				const char* eq = NULL;
+ 				if (strncmp(a, "--max-depth", 11) == 0) eq = a + 11;
+ 				const char* v	= take_opt_value(&i, argc, argv, "--max-depth", eq);
+ 				u32			tmp = 0;
+ 				if (!parse_u32(v, &tmp) || tmp < 1 || tmp > 254) {
+ 					fprintf(stderr, "error: invalid --max-depth '%s' (must be 1..254)\n", v);
+ 					return 2;
+ 				}
+ 				max_depth_u32 = tmp;
+ 				continue;
+ 			}
+ 
+ #ifdef ENABLE_SERVER
+ 			// --listen or --listen=PORT
+ 			if (strcmp(a, "-l") == 0 || strncmp(a, "--listen", 8) == 0) {
+ 				const char* eq = NULL;
+ 				if (strncmp(a, "--listen", 8) == 0) eq = a + 8;
+ 				const char* v	= take_opt_value(&i, argc, argv, "--listen", eq);
+ 				u32			tmp = 0;
+ 				if (!parse_u32(v, &tmp) || tmp < 1 || tmp > 65535) {
+ 					fprintf(stderr, "error: invalid port '%s' (must be 1..65535)\n", v);
+ 					return 2;
+ 				}
+ 				server_mode = true;
+ 				listen_port = tmp;
+ 				continue;
+ 			}
+ #endif
+ 
+ #ifdef ENABLE_PRETTY_INPUT
+ 			if (strcmp(a, "--no-pretty") == 0) {
+ 				enable_pretty = false;
+ 				continue;
+ 			}
+ #endif
+ 
+ 			fprintf(stderr, "error: unknown option '%s'\n", a);
+ 			usage(argv[0]);
+ 			return 2;
+ 		}
+ 
+ 		// Positional argument
+ 		if (pos_n < 2) pos[pos_n++] = a;
+-		else {
+-			fprintf(stderr, "error: too many positional arguments\n");
+-			usage(argv[0]);
+-			return 2;
+-		}
+-	}
+-
+-	// Load DB (always exactly once)
+-	TIME_INIT();
+-	graph_load_from_file(&G, db_path);
+-	atexit(atexit_handler);
++                else {
++                        fprintf(stderr, "error: too many positional arguments\n");
++                        usage(argv[0]);
++                        return 2;
++                }
++        }
++
++        if (diff_mode && bench_mode) {
++                fprintf(stderr, "error: --diff cannot be combined with --bench\n");
++                return 2;
++        }
++
++        if (diff_mode) {
++                if (pos_n != 0) {
++                        fprintf(stderr, "error: START/TARGET not allowed in diff mode\n");
++                        usage(argv[0]);
++                        return 2;
++                }
++                diff_run(diff_old_path, diff_new_path, 10);
++                return 0;
++        }
++
++        // Load DB (always exactly once)
++        TIME_INIT();
++        graph_load_from_file(&G, db_path);
++        atexit(atexit_handler);
+ 
+ #ifdef ENABLE_SERVER
+-	if (server_mode) {
+-		if (pos_n != 0) {
+-			fprintf(stderr, "error: START/TARGET not allowed with --listen\n");
+-			usage(argv[0]);
+-			return 2;
+-		}
+-		// Server mode uses max_depth_u32 as well.
+-		server_listen(&G, (int)listen_port);
+-		return 0;
+-	}
++        if (server_mode) {
++                if (pos_n != 0) {
++                        fprintf(stderr, "error: START/TARGET not allowed with --listen\n");
++                        usage(argv[0]);
++                        return 2;
++                }
++                // Server mode uses max_depth_u32 as well.
++                server_listen(&G, (int)listen_port);
++                return 0;
++        }
+ #endif
+ 
+-	// Single query mode
+-	if (pos_n == 2) {
++        if (bench_mode) {
++                if (pos_n != 0) {
++                        fprintf(stderr, "error: no START/TARGET allowed in bench mode\n");
++                        usage(argv[0]);
++                        return 2;
++                }
++                bench_run(&G, bench_iters, (u8)max_depth_u32);
++                return 0;
++        }
++
++        // Single query mode
++        if (pos_n == 2) {
+ 		string start  = string_clone(STR((char*)pos[0], (int)strlen(pos[0])));
+ 		string target = string_clone(STR((char*)pos[1], (int)strlen(pos[1])));
+ 
+ 		PathIDs path_ids = {0};
+ 		bool	ok		 = graph_find_path_titles(&G, start, target, (u8)max_depth_u32, &path_ids);
+ 		if (ok) graph_print_path(&G, &path_ids);
+ 		else println(SLIT("No path found"));
+ 
+ 		string_free(&start);
+ 		string_free(&target);
+ 		return ok ? 0 : 1;
+ 	}
+ 
+ 	if (pos_n != 0) {
+ 		fprintf(stderr, "error: expected either 0 or 2 positional args (START TARGET)\n");
+ 		usage(argv[0]);
+ 		return 2;
+ 	}
+ 
+ 	// Interactive mode
+ #ifdef ENABLE_PRETTY_INPUT
+ 	if (enable_pretty) pretty_init(&G);
+ 	log_ts("pretty input initialized");
+ #endif
+ 
+diff --git a/client/diff_mode.c b/client/diff_mode.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..81da39fff6c121fcb1094b065502e05d967f6b90
+--- /dev/null
++++ b/client/diff_mode.c
+@@ -0,0 +1,185 @@
++// Simple min-heap for keeping top-K items by score
++typedef struct {
++        u32    id;
++        double score;
++} DiffTop;
++
++STATIC void diff_top_swap(DiffTop* a, DiffTop* b) {
++        DiffTop t = *a;
++        *a           = *b;
++        *b           = t;
++}
++
++STATIC void diff_top_sift_down(DiffTop* h, int n, int i) {
++        while (1) {
++                int l = 2 * i + 1;
++                int r = l + 1;
++                int s = i;
++                if (l < n && h[l].score < h[s].score) s = l;
++                if (r < n && h[r].score < h[s].score) s = r;
++                if (s == i) break;
++                diff_top_swap(&h[i], &h[s]);
++                i = s;
++        }
++}
++
++STATIC void diff_top_sift_up(DiffTop* h, int i) {
++        while (i > 0) {
++                int p = (i - 1) / 2;
++                if (h[p].score <= h[i].score) break;
++                diff_top_swap(&h[p], &h[i]);
++                i = p;
++        }
++}
++
++STATIC void diff_top_push(DiffTop* h, int* sz, int k, u32 id, double score) {
++        if (k <= 0) return;
++        if (*sz < k) {
++                h[*sz].id    = id;
++                h[*sz].score = score;
++                diff_top_sift_up(h, *sz);
++                (*sz)++;
++        } else if (score > h[0].score) {
++                h[0].id    = id;
++                h[0].score = score;
++                diff_top_sift_down(h, *sz, 0);
++        }
++}
++
++STATIC int diff_top_cmp_desc(const void* a, const void* b) {
++        const DiffTop* x = (const DiffTop*)a;
++        const DiffTop* y = (const DiffTop*)b;
++        if (x->score < y->score) return 1;
++        if (x->score > y->score) return -1;
++        if (x->id < y->id) return -1;
++        if (x->id > y->id) return 1;
++        return 0;
++}
++
++typedef struct {
++        string title;
++        u32    ridx;
++} RedirTitleIdx;
++
++STATIC int redir_title_cmp(const void* a, const void* b) {
++        const RedirTitleIdx* x = (const RedirTitleIdx*)a;
++        const RedirTitleIdx* y = (const RedirTitleIdx*)b;
++        return string_cmp(x->title, y->title);
++}
++
++STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
++        Graph old_g = {0};
++        Graph new_g = {0};
++
++        printf("[diff] loading old db: %s\n", old_path);
++        graph_load_from_file(&old_g, old_path);
++        printf("[diff] loading new db: %s\n", new_path);
++        graph_load_from_file(&new_g, new_path);
++
++        // Build PageRank once per graph for relevance ordering.
++        pagerank_build(&old_g, 20, 0.85, 0.0);
++        pagerank_build(&new_g, 20, 0.85, 0.0);
++
++        // Mark targets that have an incoming redirect whose title existed as a canonical
++        // page in the old snapshot (heuristic for renames).
++        bool* new_dest_has_old_redirect = NULL;
++        if (new_g.N > 0) {
++                new_dest_has_old_redirect = (bool*)calloc((size_t)new_g.N, sizeof(bool));
++                if (!new_dest_has_old_redirect) {
++                        fprintf(stderr, "error: OOM new_dest_has_old_redirect\n");
++                        exit(1);
++                }
++        }
++        for (u32 i = 0; i < new_g.nr_unredir; i++) {
++                UnredirEdge* e = &new_g.unredir[i];
++                if (e->redir_idx >= new_g.nr_redir_titles) continue;
++                string rt = new_g.redir_titles[e->redir_idx];
++                if (graph_find_id(&old_g, rt) != UINT32_MAX) new_dest_has_old_redirect[e->dest] = true;
++        }
++
++        // Build a sorted index of redirect titles in the new snapshot for quick lookup
++        // when testing whether an old title has become a redirect.
++        RedirTitleIdx* new_redir_index = NULL;
++        int            new_redir_n     = 0;
++        if (new_g.nr_redir_titles) {
++                new_redir_n   = (int)new_g.nr_redir_titles;
++                new_redir_index = (RedirTitleIdx*)malloc((size_t)new_redir_n * sizeof(RedirTitleIdx));
++                if (!new_redir_index) {
++                        fprintf(stderr, "error: OOM new_redir_index\n");
++                        exit(1);
++                }
++                for (int i = 0; i < new_redir_n; i++) {
++                        new_redir_index[i].title = new_g.redir_titles[i];
++                        new_redir_index[i].ridx  = (u32)i;
++                }
++                qsort(new_redir_index, (size_t)new_redir_n, sizeof(RedirTitleIdx), redir_title_cmp);
++        }
++
++        bool* old_titles_redirected = NULL;
++        if (old_g.N > 0) {
++                old_titles_redirected = (bool*)calloc((size_t)old_g.N, sizeof(bool));
++                if (!old_titles_redirected) {
++                        fprintf(stderr, "error: OOM old_titles_redirected\n");
++                        exit(1);
++                }
++        }
++        if (new_redir_index) {
++                for (int i = 0; i < new_redir_n; i++) {
++                        string rt = new_redir_index[i].title;
++                        u32    old_id = graph_find_id(&old_g, rt);
++                        if (old_titles_redirected && old_id != UINT32_MAX) old_titles_redirected[old_id] = true;
++                }
++        }
++
++        DiffTop* add_heap   = (DiffTop*)malloc((size_t)topk * sizeof(DiffTop));
++        DiffTop* del_heap   = (DiffTop*)malloc((size_t)topk * sizeof(DiffTop));
++        int      add_sz     = 0;
++        int      del_sz     = 0;
++        if ((!add_heap && topk > 0) || (!del_heap && topk > 0)) {
++                fprintf(stderr, "error: OOM diff heaps\n");
++                exit(1);
++        }
++
++        // Collect top additions: canonical titles absent in old graph and not explained by
++        // old titles being turned into redirects.
++        for (u32 id = 0; id < new_g.N; id++) {
++                string t = new_g.titles[id];
++                if (graph_find_id(&old_g, t) != UINT32_MAX) continue;
++                if (new_dest_has_old_redirect && new_dest_has_old_redirect[id]) continue;
++                double pr = pagerank_score(&new_g, id);
++                diff_top_push(add_heap, &add_sz, topk, id, pr);
++        }
++
++        // Collect top deletions: canonical titles missing in new graph and not preserved
++        // as redirects.
++        for (u32 id = 0; id < old_g.N; id++) {
++                string t = old_g.titles[id];
++                if (graph_find_id(&new_g, t) != UINT32_MAX) continue;
++                if (old_titles_redirected && old_titles_redirected[id]) continue;
++                double pr = pagerank_score(&old_g, id);
++                diff_top_push(del_heap, &del_sz, topk, id, pr);
++        }
++
++        qsort(add_heap, (size_t)add_sz, sizeof(DiffTop), diff_top_cmp_desc);
++        qsort(del_heap, (size_t)del_sz, sizeof(DiffTop), diff_top_cmp_desc);
++
++        printf("\nTop %d new articles (PageRank-biased, excluding renames):\n", topk);
++        for (int i = 0; i < add_sz; i++) {
++                DiffTop* d = &add_heap[i];
++                string   t = new_g.titles[d->id];
++                printf("  %2d. %.*s (PR=%.6g)\n", i + 1, STR_LEN(t), STR_PTR(t), d->score);
++        }
++
++        printf("\nTop %d deletions (PageRank-biased, excluding renames):\n", topk);
++        for (int i = 0; i < del_sz; i++) {
++                DiffTop* d = &del_heap[i];
++                string   t = old_g.titles[d->id];
++                printf("  %2d. %.*s (PR=%.6g)\n", i + 1, STR_LEN(t), STR_PTR(t), d->score);
++        }
++
++        free(new_dest_has_old_redirect);
++        free(new_redir_index);
++        free(old_titles_redirected);
++        free(add_heap);
++        free(del_heap);
++}
+diff --git a/client/pagerank.c b/client/pagerank.c
+index aaf0cdba17c8043a1386495f22795d84025c42cb..25f50231603031ff829d6741f4a8415aa520a193 100644
+--- a/client/pagerank.c
++++ b/client/pagerank.c
+@@ -1,28 +1,31 @@
+ // avoid importing/linking math library unnecessarily
+ #define fabs(x) ((x) < 0 ? -(x) : (x))
+ 
++#include <float.h>
++#include <math.h>
++
+ typedef struct {
+ 	u32	   id;
+ 	double score;
+ } PRTop;
+ 
+ STATIC inline void pr_swap(PRTop* a, PRTop* b) {
+ 	PRTop t = *a;
+ 	*a		= *b;
+ 	*b		= t;
+ }
+ 
+ // min-heap by score (keep best K by evicting smallest)
+ STATIC void pr_heap_sift_down(PRTop* h, int n, int i) {
+ 	while (1) {
+ 		int l = 2 * i + 1, r = l + 1, s = i;
+ 		if (l < n && h[l].score < h[s].score) s = l;
+ 		if (r < n && h[r].score < h[s].score) s = r;
+ 		if (s == i) break;
+ 		pr_swap(&h[i], &h[s]);
+ 		i = s;
+ 	}
+ }
+ STATIC void pr_heap_sift_up(PRTop* h, int i) {
+ 	while (i > 0) {
+ 		int p = (i - 1) / 2;
+@@ -97,54 +100,71 @@ STATIC void pagerank_build(Graph* g, int iters, double damp, double eps) {
+ 
+ 			if (deg == 0) {
+ 				dangling += (double)r[u];
+ 				continue;
+ 			}
+ 
+ 			double	  share = r[u] / (double)deg;
+ 			const u8* p		= u24_cptr(g->out_edges24, beg);
+ 			for (u32 idx = beg; idx < end; idx++, p += 3) {
+ 				u32 v = u24_load(p); // no checks here; validated at startup
+ 				nxt[v] += share;
+ 			}
+ 		}
+ 
+ 		double base		= (1.0f - damp) / (double)N;
+ 		double add_dang = (double)(dangling / (double)N);
+ 
+ 		double diff = 0.0;
+ 		for (u32 i = 0; i < N; i++) {
+ 			double nr = base + damp * (nxt[i] + add_dang);
+ 			diff += fabs((double)nr - (double)r[i]);
+ 			r[i] = nr;
+ 		}
+ 
+ 		if (eps > 0.0f && (double)diff < eps) break;
+-	}
+-
+-	free(nxt);
+-	g->pagerank = r;
++        }
++
++        free(nxt);
++
++        // Apply an in-place alpha bias to favor high-PR nodes. The biased scores are
++        // normalized so they still form a proper probability distribution for the
++        // sampler.
++        const double alpha = 1.6;
++        double       sum   = 0.0;
++        for (u32 i = 0; i < N; i++) {
++                double biased = pow(r[i], alpha);
++                if (biased == 0.0) biased = DBL_MIN;
++                r[i]     = biased;
++                sum += biased;
++        }
++        if (sum > 0.0) {
++                double inv = 1.0 / sum;
++                for (u32 i = 0; i < N; i++) r[i] *= inv;
++        }
++
++        g->pagerank = r;
+ }
+ 
+ // Select top-k nodes by PageRank within a contiguous title-range [lo, hi] inclusive.
+ // Writes up to k node IDs to out_ids, sorted by descending PR score.
+ // Returns count written.
+ STATIC int pagerank_topk_in_title_range(const Graph* g, u32 lo, u32 hi, int k, u32* out_ids) {
+ 	if (!g || !g->pagerank || !out_ids || k <= 0) return 0;
+ 	if (lo > hi || hi >= g->N) return 0;
+ 
+ 	if (k > 1000) k = 1000; // keep it sane for interactive use
+ 
+ 	PRTop* heap = (PRTop*)malloc((size_t)k * sizeof(PRTop));
+ 	if (!heap) {
+ 		fprintf(stderr, "error: OOM in pagerank_topk\n");
+ 		exit(1);
+ 	}
+ 	int sz = 0;
+ 
+ 	for (u32 id = lo; id <= hi; id++) {
+ 		pr_topk_push(heap, &sz, k, id, g->pagerank[id]);
+ 	}
+ 
+ 	qsort(heap, (size_t)sz, sizeof(PRTop), pr_cmp_desc);
+ 	for (int i = 0; i < sz; i++) out_ids[i] = heap[i].id;
+ 
+diff --git a/gen_prsampler_index.c b/gen_prsampler_index.c
+deleted file mode 100644
+index da90444bf457e856ef96d8494444eaf8c0f8ea6b..0000000000000000000000000000000000000000
+--- a/gen_prsampler_index.c
++++ /dev/null
+@@ -1,140 +0,0 @@
+-// gen_prsampler_index.c
+-// Load ONE Wikipedia link DB (.xz), compute PageRank, build PRSampler,
+-// and write 1,000,000 sampled entry titles (newline-separated).
+-//
+-// Build (macOS): cc -O2 -std=c11 -Wall -Wextra -pedantic gen_prsampler_index.c -lm -o gen_prsampler_index
+-
+-#include "diff_src/00_prelude.c"
+-#include "diff_src/02_title_helpers.c"
+-#include "diff_src/03_xz.c"
+-#include "diff_src/04_db_parsing.c"
+-
+-static uint64_t rng64(uint64_t* s) {
+-	// xorshift64*
+-	uint64_t x = *s;
+-	x ^= x >> 12;
+-	x ^= x << 25;
+-	x ^= x >> 27;
+-	*s = x;
+-	return x * 2685821657736338717ULL;
+-}
+-
+-#include "diff_src/08_topk.c"
+-#include "diff_src/10_pagerank.c"
+-#include "diff_src/13_prsampler.c"
+-
+-static CombinedMap build_combined_single(const WikiDB* db) {
+-	if (!db || db->nr_entries <= 0) die("build_combined_single: empty db");
+-
+-	CombinedMap cm;
+-	memset(&cm, 0, sizeof(cm));
+-
+-	cm.n		 = (uint32_t)db->nr_entries;
+-	cm.titles	 = (TitleRef*)xmalloc((size_t)cm.n * sizeof(TitleRef));
+-	cm.mapB		 = (uint32_t*)xmalloc((size_t)cm.n * sizeof(uint32_t));
+-	cm.locA_of_g = (int32_t*)xmalloc((size_t)cm.n * sizeof(int32_t));
+-	cm.locB_of_g = (int32_t*)xmalloc((size_t)cm.n * sizeof(int32_t));
+-
+-	for (uint32_t i = 0; i < cm.n; i++) {
+-		cm.titles[i]	= db_title_ref(db, (int32_t)i);
+-		cm.mapB[i]		= i;
+-		cm.locA_of_g[i] = -1;
+-		cm.locB_of_g[i] = (int32_t)i;
+-	}
+-
+-	cm.common_titles  = cm.n;
+-	cm.added_titles	  = 0;
+-	cm.removed_titles = 0;
+-	return cm;
+-}
+-
+-static void combined_single_free(CombinedMap* cm) {
+-	if (!cm) return;
+-	if (cm->titles) free(cm->titles);
+-	if (cm->mapA) free(cm->mapA);
+-	if (cm->mapB) free(cm->mapB);
+-	if (cm->locA_of_g) free(cm->locA_of_g);
+-	if (cm->locB_of_g) free(cm->locB_of_g);
+-	memset(cm, 0, sizeof(*cm));
+-}
+-
+-static uint64_t parse_u64_or_die(const char* s, const char* what) {
+-	if (!s || !*s) die("missing integer argument");
+-	errno				   = 0;
+-	char*			   end = NULL;
+-	unsigned long long v   = strtoull(s, &end, 10);
+-	if (errno != 0 || !end || *end != '\0') {
+-		fprintf(stderr, "error: invalid %s: %s\n", what, s);
+-		exit(2);
+-	}
+-	return (uint64_t)v;
+-}
+-
+-int main(int argc, char** argv) {
+-	if (argc < 3) {
+-		fprintf(stderr, "usage: %s <wiki_db.xz> <out.txt> [seed] [alpha]\n", argv[0]);
+-		fprintf(stderr, "  Writes 1,000,000 newline-separated sampled titles.\n");
+-		fprintf(stderr, "  seed  (default 1234567)\n");
+-		fprintf(stderr, "  alpha (default 2.0) biases toward high-PR nodes\n");
+-		return 2;
+-	}
+-
+-	const char* db_path	 = argv[1];
+-	const char* out_path = argv[2];
+-	uint64_t	seed	 = (argc >= 4) ? parse_u64_or_die(argv[3], "seed") : 1234567ULL;
+-	double		alpha	 = 2.0;
+-	if (argc >= 5) {
+-		char* end = NULL;
+-		errno	  = 0;
+-		alpha	  = strtod(argv[4], &end);
+-		if (errno != 0 || !end || *end != '\0' || !(alpha > 0.0)) {
+-			fprintf(stderr, "error: invalid alpha: %s\n", argv[4]);
+-			return 2;
+-		}
+-	}
+-
+-	WikiDB db;
+-	if (!db_load_xz(&db, db_path)) die("failed loading db");
+-
+-	CombinedMap cm = build_combined_single(&db);
+-
+-	uint8_t* active = (uint8_t*)xmalloc((size_t)cm.n);
+-	memset(active, 1, (size_t)cm.n);
+-	uint8_t* cheese = build_cheese_mask(&cm);
+-
+-	double* pr = NULL;
+-	PRMeta	meta;
+-	pagerank_compute_B(&db, &cm, active, cheese, 0 /*no_cheese_edges*/, 30 /*iters*/, 0.85 /*damp*/, 0.0 /*eps*/, &pr,
+-					   &meta);
+-
+-	PRSampler samp;
+-	if (!prsampler_build(&samp, pr, active, cm.n, alpha, seed)) die("failed to build PRSampler");
+-
+-	FILE* out = fopen(out_path, "wb");
+-	if (!out) {
+-		fprintf(stderr, "error: open %s: %s\n", out_path, strerror(errno));
+-		return 1;
+-	}
+-
+-	const uint32_t nsamples = 1000000u;
+-	for (uint32_t i = 0; i < nsamples; i++) {
+-		uint32_t g = random_biased(&samp);
+-		fprint_title(out, cm.titles[g]);
+-		fputc('\n', out);
+-	}
+-
+-	if (ferror(out)) {
+-		fprintf(stderr, "error: write failed: %s\n", strerror(errno));
+-		fclose(out);
+-		return 1;
+-	}
+-	fclose(out);
+-
+-	prsampler_free(&samp);
+-	free(pr);
+-	free(active);
+-	free(cheese);
+-	combined_single_free(&cm);
+-	db_free(&db);
+-	return 0;
+-}
