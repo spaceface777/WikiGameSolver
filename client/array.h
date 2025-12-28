@@ -42,7 +42,7 @@ INLINE void array_free(array* str) {
 #elif defined(USE_FAST_ARRAY)
 
 typedef struct {
-	void*		   ptr;
+	void*  ptr;
 	size_t len;
 } array;
 

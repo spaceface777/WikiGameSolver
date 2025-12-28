@@ -4,7 +4,6 @@
 
 // #else
 
-
 // #endif
 
 typedef array string;
