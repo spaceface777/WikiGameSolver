@@ -67,5 +67,5 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: ${{ matrix.lang }}.bin
-        tag_name: TEST5_${{ steps.setup.outputs.date }}
-        name: TEST5_${{ steps.setup.outputs.date }}
+        tag_name: ${{ steps.setup.outputs.date }}
+        name: ${{ steps.setup.outputs.date }}
