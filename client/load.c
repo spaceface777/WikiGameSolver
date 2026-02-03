@@ -178,30 +178,8 @@ STATIC void validate_graph_fully(Graph* g) {
 	g->validated = true;
 }
 
-STATIC void graph_load_from_file(Graph* g, const char* path) {
-	puts("reading db file into memory...");
-	long  comp_len = 0;
-	char* comp	   = read_file_all(path, &comp_len);
-	log_ts("read db file");
-
-	char* raw	  = NULL;
-	long  raw_len = 0;
-
-#ifdef NO_COMPRESSION
-	raw		= comp;
-	raw_len = comp_len;
-#else
-	bool is_raw = (comp_len >= 4) && (memcmp(comp, "WIKI", 4) == 0);
-	if (is_raw) {
-		raw		= comp;
-		raw_len = comp_len;
-	} else {
-		raw = lzma_decompress_alloc(comp, comp_len, &raw_len);
-		free(comp);
-		log_ts("decompressed db file");
-	}
-#endif
-
+// Load graph from a raw (decompressed) buffer. The buffer is freed after loading.
+STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 	puts("Processing data...");
 	char* p	  = raw;
 	char* end = raw + raw_len;
@@ -453,4 +431,31 @@ STATIC void graph_load_from_file(Graph* g, const char* path) {
 	validate_graph_fully(g);
 
 	log_ts("validated db file");
+}
+
+STATIC void graph_load_from_file(Graph* g, const char* path) {
+	puts("reading db file into memory...");
+	long  comp_len = 0;
+	char* comp	   = read_file_all(path, &comp_len);
+	log_ts("read db file");
+
+	char* raw	  = NULL;
+	long  raw_len = 0;
+
+#ifdef NO_COMPRESSION
+	raw		= comp;
+	raw_len = comp_len;
+#else
+	bool is_raw = (comp_len >= 4) && (memcmp(comp, "WIKI", 4) == 0);
+	if (is_raw) {
+		raw		= comp;
+		raw_len = comp_len;
+	} else {
+		raw = lzma_decompress_alloc(comp, comp_len, &raw_len);
+		free(comp);
+		log_ts("decompressed db file");
+	}
+#endif
+
+	graph_load_from_mem(g, raw, raw_len);
 }

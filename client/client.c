@@ -28,20 +28,6 @@
 #include "string.h"
 #include "time.h"
 
-#ifndef NO_COMPRESSION
-#include "lzma.h"
-#endif
-
-#ifdef ENABLE_SERVER
-#include "thread_pool.h"
-#if __has_include("keys.h")
-#include "keys.h"
-#else
-#warning "No keys.h found, using default keys; this is insecure."
-#include "keys_default.h"
-#endif
-#endif
-
 // ----------------------------------------------------------------------------
 // Configuration
 // ----------------------------------------------------------------------------
@@ -112,12 +98,10 @@ typedef struct PathIDs {
 	u32 ids[PATH_CAP]; // node IDs
 } PathIDs;
 
-// Global immutable graph after load.
-STATIC Graph G = {0};
-
 // ----------------------------------------------------------------------------
 // Shared helpers (declared here, defined in included .c files)
 // ----------------------------------------------------------------------------
+STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len);
 STATIC void graph_load_from_file(Graph* g, const char* path);
 STATIC u32	graph_find_id(const Graph* g, string title); // returns UINT32_MAX if not found
 STATIC void graph_print_path(const Graph* g, const PathIDs* path);
@@ -128,6 +112,25 @@ STATIC void pagerank_build(Graph* g, int iters, double damp, double eps);
 STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth);
 STATIC void diff_run(const char* old_path, const char* new_path, int topk);
 
+#if !defined(CLIENT_HEADER_ONLY)
+
+// Global immutable graph after load.
+STATIC Graph G = {0};
+
+#ifndef NO_COMPRESSION
+#include "lzma.h"
+#endif
+
+#ifdef ENABLE_SERVER
+#include "thread_pool.h"
+#if __has_include("keys.h")
+#include "keys.h"
+#else
+#warning "No keys.h found, using default keys; this is insecure."
+#include "keys_default.h"
+#endif
+#endif
+
 #include "graph.c"
 #include "load.c"
 #include "output.c"
@@ -136,8 +139,8 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk);
 #include "server.c"
 
 #include "bench_mode.c"
-#include "input.c"
 #include "diff_mode.c"
+#include "input.c"
 
 STATIC void atexit_handler(void) {
 	// Intentionally empty. The process exits and OS reclaims memory.
@@ -224,6 +227,8 @@ int main(int argc, char** argv) {
 #ifdef ENABLE_PRETTY_INPUT
 	bool enable_pretty = true;
 #endif
+
+	log_ts("starting wiki game solver");
 
 	// Collect positional args after options
 	const char* pos[2] = {0, 0};
@@ -441,7 +446,9 @@ int main(int argc, char** argv) {
 
 	return 0;
 }
-#endif
+#endif // !defined(__EMSCRIPTEN__)
+
+#endif // !defined(CLIENT_HEADER_ONLY)
 
 #if UINTPTR_MAX != 0xffffffffffffffff && !defined(__EMSCRIPTEN__)
 #warning "This program is designed for 64-bit architectures."

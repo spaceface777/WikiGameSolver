@@ -1,74 +1,37 @@
+// Emscripten main entry point for WebAssembly build.
+// Provides JS bindings for init() and search() functions.
+
 #include <stdarg.h>
+#include <string>
 
-#include <emscripten/emscripten.h>
 #include <emscripten/bind.h>
-
-#include "util.h"
-#include "array.h"
-#include "string.h"
-
-#include "thirdparty/liblzma.h"
+#include <emscripten/emscripten.h>
 
 extern "C" {
 #pragma GCC diagnostic ignored "-Wreturn-type-c-linkage"
-typedef struct Path Path;
-typedef struct Node Node;
-typedef struct Link Link;
-typedef struct Entry Entry;
 
-void load_mem(char* path);
-void load_mem2(char* compressed_buf, long compressed_len);
-void load_mem3(char* buf);
+// Include the main client code (which includes graph.c, load.c, search.c, etc.)
+// This will define Graph, PathIDs, and all the helper functions.
+#define CLIENT_HEADER_ONLY
+#include "client.c"
 
-Entry* find_entry(string name);
-Path find_path(string start, string target);
-void print_path(Path path);
-void path_free(Path* head);
+extern Graph G;
 
-typedef struct DFSState {
-	int idx;
-	u8 depth;
-	u8 limit;
-} DFSState;
-bool dfs(Entry* entry, string target, DFSState state, Node* path);
+#include "thirdparty/liblzma.h"
 
-struct Path {
-	Node* node;
-};
-
-struct Node {
-	string data;
-	Node* next;
-};
-
-struct Entry {
-	string title;
-	array  links;
-};
-
-extern int nr_entries;
-extern Entry* entries;
-extern u8* depths;
-
-}
+} // extern "C"
 
 using namespace emscripten;
 
-Path emscripten_main(string start, string target) {
-	depths = (u8*)calloc(nr_entries, sizeof(u8));
-	Path path = find_path(start, target);
-	free(depths);
-
-	return path;
-}
-
+// ----------------------------------------------------------------------------
+// JS-callable init function: decompresses and loads the database
+// ----------------------------------------------------------------------------
 int init(long temp_addr, val cb) {
 	char* temp_buf = (char*)temp_addr;
 
-	char* buf = 0;
 	puts("decompressing db file...");
 	lzma_stream strm = LZMA_STREAM_INIT;
-	lzma_ret ret = lzma_stream_decoder(&strm, UINT64_MAX, 0);
+	lzma_ret	ret	 = lzma_stream_decoder(&strm, UINT64_MAX, 0);
 	if (ret != LZMA_OK) {
 		printf("Error: Cannot initialize decoder\n");
 		exit(1);
@@ -76,21 +39,19 @@ int init(long temp_addr, val cb) {
 
 	const int LZMA_OUT_BUF_SIZE = 1 << 21;
 
-	char* output_buffer = NULL;
-	size_t output_size = 0;
+	char*  output_buffer = NULL;
+	size_t output_size	 = 0;
 
 	do {
 		int nread = cb().as<int>();
 
-		strm.next_in = (uint8_t*)temp_buf;
+		strm.next_in  = (uint8_t*)temp_buf;
 		strm.avail_in = nread;
 
 		do {
-			output_buffer = (char*)realloc(output_buffer, output_size + LZMA_OUT_BUF_SIZE);
-			strm.next_out = (uint8_t*)(output_buffer + output_size);
+			output_buffer  = (char*)realloc(output_buffer, output_size + LZMA_OUT_BUF_SIZE);
+			strm.next_out  = (uint8_t*)(output_buffer + output_size);
 			strm.avail_out = LZMA_OUT_BUF_SIZE;
-
-			// printf("%p=[%02hhx, %02hhx, %02hhx, %02hhx...] %zu       %p=[%02hhx, %02hhx, %02hhx, %02hhx...] %zu\n", strm.next_in, strm.next_in[0], strm.next_in[1], strm.next_in[2], strm.next_in[3], strm.avail_in, strm.next_out, strm.next_out[0], strm.next_out[1], strm.next_out[2], strm.next_out[3], strm.avail_out);
 
 			ret = lzma_code(&strm, LZMA_RUN);
 			if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
@@ -105,43 +66,47 @@ int init(long temp_addr, val cb) {
 	lzma_end(&strm);
 	free(temp_buf);
 
-	buf = output_buffer;
-
-	load_mem3(buf);
+	graph_load_from_mem(&G, output_buffer, (long)output_size);
 
 	return 123;
 }
 
-
+// ----------------------------------------------------------------------------
+// JS-callable search function
+// ----------------------------------------------------------------------------
 val search(std::string start_, std::string target_) {
-	string start = STR(start_.c_str(), start_.length());
-	string target = STR(target_.c_str(), target_.length());
-
-	Path path = emscripten_main(start, target);
-
+	string start  = STR((char*)start_.c_str(), (int)start_.length());
+	string target = STR((char*)target_.c_str(), (int)target_.length());
 
 	val arr = val::array();
 
-	Node* node = path.node;
-	if (!node) {
-		println(SLIT("\n\nNo path found."));
+	PathIDs path_ids = {.len = 0, .ids = {0}};
+	bool	ok		 = graph_find_path_titles(&G, start, target, MAX_DEPTH, &path_ids);
+
+	if (!ok || path_ids.len == 0) {
+		puts("No path found.");
 		return arr;
 	}
 
-	while (node != null) {
-		arr.call<void>("push", std::string(STR_PTR(node->data), STR_LEN(node->data)));
-		node = node->next;
+	// Convert path to JS array of title strings
+	for (u32 i = 0; i < path_ids.len; i++) {
+		u32	   id	 = path_ids.ids[i];
+		string title = G.titles[id];
+		arr.call<void>("push", std::string(STR_PTR(title), STR_LEN(title)));
 	}
 
 	return arr;
 }
 
+// ----------------------------------------------------------------------------
+// Emscripten bindings
+// ----------------------------------------------------------------------------
 EMSCRIPTEN_BINDINGS(my_module) {
 	function("init", &init);
 	function("search", &search);
 	function("exit", &exit);
 
 #if __has_feature(leak_sanitizer)
-    function("check_leaks", &__lsan_do_recoverable_leak_check);
+	function("check_leaks", &__lsan_do_recoverable_leak_check);
 #endif
 }
