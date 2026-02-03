@@ -90,6 +90,7 @@ STATIC char* lzma_decompress_alloc(const char* in, long in_len, long* out_len) {
 #endif
 
 STATIC void validate_graph_fully(Graph* g) {
+#if !defined(DB_NO_VALIDATE)
 	if (!g->titles || !g->out_offsets || !g->out_edges24 || !g->in_offsets || !g->in_edges24)
 		db_fail("internal graph not initialized");
 
@@ -163,7 +164,6 @@ STATIC void validate_graph_fully(Graph* g) {
 		}
 	}
 
-#if VALIDATE_UNREDIR_EDGES
 	// Validate each unredir pair is a real edge in the graph (since adjacency is sorted).
 	// Potentially expensive but startup-only.
 	for (u32 i = 0; i < g->nr_unredir; i++) {
@@ -173,7 +173,8 @@ STATIC void validate_graph_fully(Graph* g) {
 			exit(1);
 		}
 	}
-#endif
+
+#endif // !defined(DB_NO_VALIDATE)
 
 	g->validated = true;
 }

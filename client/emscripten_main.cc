@@ -88,11 +88,32 @@ val search(std::string start_, std::string target_) {
 		return arr;
 	}
 
-	// Convert path to JS array of title strings
-	for (u32 i = 0; i < path_ids.len; i++) {
-		u32	   id	 = path_ids.ids[i];
+	// First entry: the start title
+	{
+		u32	   id	 = path_ids.ids[0];
 		string title = G.titles[id];
 		arr.call<void>("push", std::string(STR_PTR(title), STR_LEN(title)));
+	}
+
+	// Subsequent entries: what link to click (with redirect annotation if applicable)
+	for (u32 i = 1; i < path_ids.len; i++) {
+		u32 a = path_ids.ids[i - 1];
+		u32 b = path_ids.ids[i];
+
+		int ridx = unredir_lookup(&G, a, b);
+		if (ridx >= 0 && (u32)ridx < G.nr_redir_titles) {
+			// Format: "redirect_title (redirects to dest_title)"
+			string redir_title = G.redir_titles[ridx];
+			string dest_title  = G.titles[b];
+			std::string formatted =
+				std::string(STR_PTR(redir_title), STR_LEN(redir_title)) + " (redirects to " +
+				std::string(STR_PTR(dest_title), STR_LEN(dest_title)) + ")";
+			arr.call<void>("push", formatted);
+		} else {
+			// Use the destination title directly
+			string title = G.titles[b];
+			arr.call<void>("push", std::string(STR_PTR(title), STR_LEN(title)));
+		}
 	}
 
 	return arr;
