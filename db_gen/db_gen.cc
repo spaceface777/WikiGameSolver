@@ -19,8 +19,9 @@ void nop(void* p) {
 // #define STRING_FREE GC_free
 #define STRING_FREE nop
 
-#include "map.h"
 #include "string.h"
+
+#include "map.h"
 
 static int		 DUMP_DATE			 = 221201;
 static const int DUMP_FORMAT_VERSION = 2;
