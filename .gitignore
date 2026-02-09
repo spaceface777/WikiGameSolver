@@ -38,3 +38,5 @@ dep/
 .vscode/
 .idea/
 *.log
+*.sqlite
+*.sqlite3
