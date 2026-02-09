@@ -10,10 +10,10 @@
 MAYBE_THREAD_LOCAL STATIC u8*  sp_ds = NULL;
 MAYBE_THREAD_LOCAL STATIC u32* sp_qs = NULL;
 
-MAYBE_THREAD_LOCAL STATIC u8*  mp_df		= NULL;
-MAYBE_THREAD_LOCAL STATIC u8*  mp_db		= NULL;
-MAYBE_THREAD_LOCAL STATIC u32* mp_qf		= NULL;
-MAYBE_THREAD_LOCAL STATIC u32* mp_qb		= NULL;
+MAYBE_THREAD_LOCAL STATIC u8*  mp_df        = NULL;
+MAYBE_THREAD_LOCAL STATIC u8*  mp_db        = NULL;
+MAYBE_THREAD_LOCAL STATIC u32* mp_qf        = NULL;
+MAYBE_THREAD_LOCAL STATIC u32* mp_qb        = NULL;
 MAYBE_THREAD_LOCAL STATIC u8*  mp_zero_memo = NULL;
 MAYBE_THREAD_LOCAL STATIC u32* mp_zero_next = NULL;
 MAYBE_THREAD_LOCAL STATIC u8*  mp_cost_done = NULL;
@@ -111,22 +111,22 @@ STATIC void mp_init(u32 N) {
 STATIC u8 sp_bfs_distance(const Graph* g, u32 s, u32 t, u8 max_depth, u32* out_vis) {
 	u32 head = 0, tail = 0;
 	sp_qs[tail++] = s;
-	sp_ds[s]	  = 0;
+	sp_ds[s]      = 0;
 
 	while (head < tail) {
 		u32 v  = sp_qs[head++];
-		u8	dv = sp_ds[v];
+		u8  dv = sp_ds[v];
 		if (v == t) break;
 		if (dv >= max_depth) continue;
 
-		u32		  beg = g->out_offsets[v];
-		u32		  end = g->out_offsets[v + 1];
-		const u8* p	  = u24_cptr(g->out_edges24, beg);
+		u32       beg = g->out_offsets[v];
+		u32       end = g->out_offsets[v + 1];
+		const u8* p   = u24_cptr(g->out_edges24, beg);
 
 		for (u32 idx = beg; idx < end; idx++, p += 3) {
 			u32 u = u24_load(p);
 			if (sp_ds[u] != 0xFF) continue;
-			sp_ds[u]	  = (u8)(dv + 1);
+			sp_ds[u]      = (u8)(dv + 1);
 			sp_qs[tail++] = u;
 			if (u == t) {
 				head = tail;
@@ -146,21 +146,21 @@ STATIC void sp_reset(u32 vis) {
 STATIC u32 mp_bfs_prefix(const Graph* g, u32 s, u8 split) {
 	u32 head = 0, tail = 0;
 	mp_qf[tail++] = s;
-	mp_df[s]	  = 0;
+	mp_df[s]      = 0;
 
 	while (head < tail) {
 		u32 u  = mp_qf[head++];
-		u8	du = mp_df[u];
+		u8  du = mp_df[u];
 		if (du >= split) continue;
 
-		u32		  beg = g->out_offsets[u];
-		u32		  end = g->out_offsets[u + 1];
-		const u8* p	  = u24_cptr(g->out_edges24, beg);
+		u32       beg = g->out_offsets[u];
+		u32       end = g->out_offsets[u + 1];
+		const u8* p   = u24_cptr(g->out_edges24, beg);
 
 		for (u32 idx = beg; idx < end; idx++, p += 3) {
 			u32 v = u24_load(p);
 			if (mp_df[v] != 0xFF) continue;
-			mp_df[v]	  = (u8)(du + 1);
+			mp_df[v]      = (u8)(du + 1);
 			mp_qf[tail++] = v;
 		}
 	}
@@ -170,21 +170,21 @@ STATIC u32 mp_bfs_prefix(const Graph* g, u32 s, u8 split) {
 STATIC u32 mp_rbfs_suffix(const Graph* g, u32 t, u8 suffix) {
 	u32 head = 0, tail = 0;
 	mp_qb[tail++] = t;
-	mp_db[t]	  = 0;
+	mp_db[t]      = 0;
 
 	while (head < tail) {
 		u32 v  = mp_qb[head++];
-		u8	dv = mp_db[v];
+		u8  dv = mp_db[v];
 		if (dv >= suffix) continue;
 
-		u32		  beg = g->in_offsets[v];
-		u32		  end = g->in_offsets[v + 1];
-		const u8* p	  = u24_cptr(g->in_edges24, beg);
+		u32       beg = g->in_offsets[v];
+		u32       end = g->in_offsets[v + 1];
+		const u8* p   = u24_cptr(g->in_edges24, beg);
 
 		for (u32 idx = beg; idx < end; idx++, p += 3) {
 			u32 pred = u24_load(p);
 			if (mp_db[pred] != 0xFF) continue;
-			mp_db[pred]	  = (u8)(dv + 1);
+			mp_db[pred]   = (u8)(dv + 1);
 			mp_qb[tail++] = pred;
 		}
 	}
@@ -225,9 +225,9 @@ STATIC bool mp_shortest_zero_dfs(const Graph* g, u32 u, u32 t, u8 D) {
 		return true;
 	}
 
-	u32		  beg = g->out_offsets[u];
-	u32		  end = g->out_offsets[u + 1];
-	const u8* p	  = u24_cptr(g->out_edges24, beg);
+	u32       beg = g->out_offsets[u];
+	u32       end = g->out_offsets[u + 1];
+	const u8* p   = u24_cptr(g->out_edges24, beg);
 
 	for (u32 idx = beg; idx < end; idx++, p += 3) {
 		u32 v = u24_load(p);
@@ -257,11 +257,11 @@ STATIC u32 mp_shortest_min_cost_dfs(const Graph* g, u32 u, u32 t, u8 D) {
 		return 0;
 	}
 
-	u32		  best_cost = MP_INF_COST;
-	u32		  best_next = UINT32_MAX;
-	u32		  beg		= g->out_offsets[u];
-	u32		  end		= g->out_offsets[u + 1];
-	const u8* p			= u24_cptr(g->out_edges24, beg);
+	u32       best_cost = MP_INF_COST;
+	u32       best_next = UINT32_MAX;
+	u32       beg       = g->out_offsets[u];
+	u32       end       = g->out_offsets[u + 1];
+	const u8* p         = u24_cptr(g->out_edges24, beg);
 
 	for (u32 idx = beg; idx < end; idx++, p += 3) {
 		u32 v = u24_load(p);
@@ -270,7 +270,7 @@ STATIC u32 mp_shortest_min_cost_dfs(const Graph* g, u32 u, u32 t, u8 D) {
 		u32 tail_cost = mp_shortest_min_cost_dfs(g, v, t, D);
 		if (tail_cost == MP_INF_COST) continue;
 
-		u8	flags	  = edge_flags_or_zero(g, idx);
+		u8  flags     = edge_flags_or_zero(g, idx);
 		u32 cand_cost = tail_cost + edge_special_cost(flags);
 		if (cand_cost < best_cost || (cand_cost == best_cost && v < best_next)) {
 			best_cost = cand_cost;
@@ -284,15 +284,15 @@ STATIC u32 mp_shortest_min_cost_dfs(const Graph* g, u32 u, u32 t, u8 D) {
 }
 
 STATIC bool mp_build_path_from_next(u32 s, u32 t, u8 D, const u32* next_arr, PathIDs* out) {
-	u32 cur			= s;
-	u32 len			= 0;
+	u32 cur         = s;
+	u32 len         = 0;
 	out->ids[len++] = s;
 
 	for (u8 step = 0; step < D; step++) {
 		u32 nxt = next_arr[cur];
 		if (nxt == UINT32_MAX) return false;
 		out->ids[len++] = nxt;
-		cur				= nxt;
+		cur             = nxt;
 	}
 	if (cur != t) return false;
 	out->len = len;
@@ -306,7 +306,7 @@ STATIC bool bikpaths_find_one(const Graph* g, u32 s, u32 t, u8 max_depth, PathID
 	assert(max_depth < (PATH_CAP - 1));
 
 	if (s == t) {
-		out->len	= 1;
+		out->len    = 1;
 		out->ids[0] = s;
 		return true;
 	}
@@ -317,7 +317,7 @@ STATIC bool bikpaths_find_one(const Graph* g, u32 s, u32 t, u8 max_depth, PathID
 
 	// 1) provable shortest distance D (bounded by max_depth)
 	u32 vis_s = 0;
-	u8	D	  = sp_bfs_distance(g, s, t, max_depth, &vis_s);
+	u8  D     = sp_bfs_distance(g, s, t, max_depth, &vis_s);
 	sp_reset(vis_s);
 	if (D == 0xFF) return false;
 
@@ -327,7 +327,7 @@ STATIC bool bikpaths_find_one(const Graph* g, u32 s, u32 t, u8 max_depth, PathID
 
 	// Reset DP memo states only for touched forward nodes.
 	for (u32 i = 0; i < vis_f; i++) {
-		u32 v			= mp_qf[i];
+		u32 v           = mp_qf[i];
 		mp_zero_memo[v] = 0;
 		mp_zero_next[v] = UINT32_MAX;
 		mp_cost_done[v] = 0;
@@ -395,7 +395,7 @@ STATIC bool graph_find_path_titles(const Graph* g, string start, string target, 
 	}
 
 	out->len = 0;
-	bool ok	 = bikpaths_find_one(g, s, t, max_depth, out);
+	bool ok  = bikpaths_find_one(g, s, t, max_depth, out);
 
 #if VERIFY_RESULT_PATH
 	if (ok) verify_path_or_die(g, out);

@@ -21,8 +21,8 @@ typedef struct Entry {
 } Entry;
 
 typedef struct DB {
-	int	   current_version_hdr;
-	int	   nr_entries;
+	int    current_version_hdr;
+	int    nr_entries;
 	Entry* entries;
 	char*  backing_mem; // keep backing buffer alive (string pointers reference this)
 	long   backing_len;
@@ -30,14 +30,14 @@ typedef struct DB {
 
 typedef struct TitleIdx {
 	string title;
-	int	   idx;
+	int    idx;
 } TitleIdx;
 
 typedef struct PageUnionItem {
-	string title;	 // canonical title (from either db)
-	int	   idx1;	 // index in db1, -1 if absent
-	int	   idx2;	 // index in db2, -1 if absent
-	int	   sort_key; // max(INCOMING count in db1, db2)
+	string title;    // canonical title (from either db)
+	int    idx1;     // index in db1, -1 if absent
+	int    idx2;     // index in db2, -1 if absent
+	int    sort_key; // max(INCOMING count in db1, db2)
 } PageUnionItem;
 
 /* ========= Config ========= */
@@ -56,7 +56,7 @@ static void die(const char* msg) {
 static int string_cmp(const string* a, const string* b) {
 	size_t an = STR_LEN(*a), bn = STR_LEN(*b);
 	size_t n = an < bn ? an : bn;
-	int	   r = memcmp(STR_PTR(*a), STR_PTR(*b), n);
+	int    r = memcmp(STR_PTR(*a), STR_PTR(*b), n);
 	if (r != 0) return r;
 	if (an < bn) return -1;
 	if (an > bn) return 1;
@@ -125,7 +125,7 @@ static void load_db(const char* path, DB* db, const char* label) {
 	unsigned int version = *(unsigned int*)p;
 	p += sizeof(version);
 	db->current_version_hdr = (int)version;
-	u8 dump_format			= version & 0xff;
+	u8 dump_format          = version & 0xff;
 	if (dump_format != DUMP_FORMAT_VERSION) {
 		free(file_buf);
 		if (dump_format > DUMP_FORMAT_VERSION) die("error: db newer than program; update client.");
@@ -157,9 +157,9 @@ static void load_db(const char* path, DB* db, const char* label) {
 	printf("[step] %s: wiring link arrays...\n", label);
 	fflush(stdout);
 	for (int i = 0; i < db->nr_entries; i++) {
-		Entry* e		= &db->entries[i];
-		u16	   nr_links = ARR_LEN(e->links);
-		e->links		= ARR(p, nr_links);
+		Entry* e        = &db->entries[i];
+		u16    nr_links = ARR_LEN(e->links);
+		e->links        = ARR(p, nr_links);
 		p += nr_links * sizeof(u32);
 	}
 
@@ -175,7 +175,7 @@ static void load_db(const char* path, DB* db, const char* label) {
 	printf("[step] %s: wiring title pointers...\n", label);
 	fflush(stdout);
 	for (int i = 0; i < db->nr_entries; i++) {
-		u16 l				 = STR_LEN(db->entries[i].title);
+		u16 l                = STR_LEN(db->entries[i].title);
 		db->entries[i].title = STR(p, l);
 		p += l;
 	}
@@ -191,37 +191,37 @@ static void load_db(const char* path, DB* db, const char* label) {
 static void build_title_index(const DB* db, TitleIdx** out_arr, size_t* out_n, const char* label) {
 	printf("[step] %s: building title index...\n", label);
 	fflush(stdout);
-	size_t	  n	  = (size_t)db->nr_entries;
+	size_t    n   = (size_t)db->nr_entries;
 	TitleIdx* arr = (TitleIdx*)malloc(sizeof(TitleIdx) * n);
 	if (!arr && n) die("error: OOM");
 	for (size_t i = 0; i < n; i++) {
 		arr[i].title = db->entries[i].title;
-		arr[i].idx	 = (int)i;
+		arr[i].idx   = (int)i;
 	}
 	qsort(arr, n, sizeof(TitleIdx), cmp_titleidx_by_title);
 	printf("[done] %s: title index built (%zu)\n\n", label, n);
 	fflush(stdout);
 	*out_arr = arr;
-	*out_n	 = n;
+	*out_n   = n;
 }
 
 static int find_idx_by_index(TitleIdx* arr, size_t n, string key) {
 	TitleIdx probe;
-	probe.title	  = key;
-	probe.idx	  = -1;
+	probe.title   = key;
+	probe.idx     = -1;
 	TitleIdx* hit = (TitleIdx*)bsearch(&probe, arr, n, sizeof(TitleIdx), cmp_titleidx_by_title);
 	return hit ? hit->idx : -1;
 }
 
 /* Compute INCOMING degrees for all pages in a DB */
 static int* compute_in_degrees(const DB* db) {
-	int	 n	   = db->nr_entries;
+	int  n     = db->nr_entries;
 	int* indeg = (int*)calloc((size_t)n, sizeof(int));
 	if (!indeg && n) die("error: OOM");
 	for (int i = 0; i < n; i++) {
-		const Entry* e		= &db->entries[i];
-		u16			 nlinks = ARR_LEN(e->links);
-		u32*		 links	= ARR_PTR(e->links);
+		const Entry* e      = &db->entries[i];
+		u16          nlinks = ARR_LEN(e->links);
+		u32*         links  = ARR_PTR(e->links);
 		for (u16 j = 0; j < nlinks; j++) {
 			int tgt = (int)links[j];
 			if (tgt >= 0 && tgt < n) indeg[tgt]++; // count incoming edge to tgt
@@ -234,8 +234,8 @@ static int* compute_in_degrees(const DB* db) {
 static string* collect_link_titles(const DB* db, int page_idx, size_t* out_count) {
 	*out_count = 0;
 	if (page_idx < 0 || page_idx >= db->nr_entries) return NULL;
-	Entry* e	  = &db->entries[page_idx];
-	u16	   nlinks = ARR_LEN(e->links);
+	Entry* e      = &db->entries[page_idx];
+	u16    nlinks = ARR_LEN(e->links);
 	u32*   links  = ARR_PTR(e->links);
 
 	size_t cnt = 0;
@@ -304,7 +304,7 @@ int main(int argc, char** argv) {
 		exit(1);
 	}
 	const char* out_path = argv[3];
-	FILE*		out		 = fopen(out_path, "w");
+	FILE*       out      = fopen(out_path, "w");
 	if (!out) {
 		fprintf(stderr, "error: open output '%s': %s\n", out_path, strerror(errno));
 		exit(1);
@@ -317,7 +317,7 @@ int main(int argc, char** argv) {
 
 	/* 2) Build fast title indexes */
 	TitleIdx *idx1 = NULL, *idx2 = NULL;
-	size_t	  nidx1 = 0, nidx2 = 0;
+	size_t    nidx1 = 0, nidx2 = 0;
 	build_title_index(&db1, &idx1, &nidx1, "db1");
 	build_title_index(&db2, &idx2, &nidx2, "db2");
 
@@ -332,8 +332,8 @@ int main(int argc, char** argv) {
 	/* 4) Build union of titles */
 	printf("[step] building union of titles...\n");
 	fflush(stdout);
-	size_t	total = (size_t)db1.nr_entries + (size_t)db2.nr_entries;
-	string* all	  = (string*)malloc(sizeof(string) * total);
+	size_t  total = (size_t)db1.nr_entries + (size_t)db2.nr_entries;
+	string* all   = (string*)malloc(sizeof(string) * total);
 	if (!all && total) die("error: OOM");
 	size_t k = 0;
 	for (int i = 0; i < db1.nr_entries; i++) all[k++] = db1.entries[i].title;
@@ -367,14 +367,14 @@ int main(int argc, char** argv) {
 
 	for (size_t i = 0; i < u; i++) {
 		string title = uniq[i];
-		int	   e1	 = find_idx_by_index(idx1, nidx1, title);
-		int	   e2	 = find_idx_by_index(idx2, nidx2, title);
-		int	   n1	 = (e1 >= 0) ? indeg1[e1] : 0; // incoming
-		int	   n2	 = (e2 >= 0) ? indeg2[e2] : 0; // incoming
+		int    e1    = find_idx_by_index(idx1, nidx1, title);
+		int    e2    = find_idx_by_index(idx2, nidx2, title);
+		int    n1    = (e1 >= 0) ? indeg1[e1] : 0; // incoming
+		int    n2    = (e2 >= 0) ? indeg2[e2] : 0; // incoming
 
-		items[i].title	  = title;
-		items[i].idx1	  = e1;
-		items[i].idx2	  = e2;
+		items[i].title    = title;
+		items[i].idx1     = e1;
+		items[i].idx2     = e2;
 		items[i].sort_key = (n1 > n2) ? n1 : n2;
 
 		if (((i + 1) % report_every == 0) || (i + 1 == u)) {
@@ -403,7 +403,7 @@ int main(int argc, char** argv) {
 			fprintf(out, "\n\n# -");
 			fprint_string(out, it->title);
 			fputc('\n', out);
-			size_t	nA = 0;
+			size_t  nA = 0;
 			string* A  = collect_link_titles(&db1, it->idx1, &nA);
 			qsort(A, nA, sizeof(string), cmp_qsort_strings);
 			for (size_t t = 0; t < nA; t++) {
@@ -416,7 +416,7 @@ int main(int argc, char** argv) {
 			fprintf(out, "\n\n# +");
 			fprint_string(out, it->title);
 			fputc('\n', out);
-			size_t	nB = 0;
+			size_t  nB = 0;
 			string* B  = collect_link_titles(&db2, it->idx2, &nB);
 			qsort(B, nB, sizeof(string), cmp_qsort_strings);
 			for (size_t t = 0; t < nB; t++) {
@@ -426,7 +426,7 @@ int main(int argc, char** argv) {
 			}
 			free(B);
 		} else {
-			size_t	nA = 0, nB = 0;
+			size_t  nA = 0, nB = 0;
 			string* A = collect_link_titles(&db1, it->idx1, &nA);
 			string* B = collect_link_titles(&db2, it->idx2, &nB);
 

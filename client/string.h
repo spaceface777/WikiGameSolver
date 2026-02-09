@@ -26,7 +26,7 @@ typedef array string;
 #else
 
 typedef struct {
-	const char*	   ptr;
+	const char*    ptr;
 	unsigned short len;
 } string;
 

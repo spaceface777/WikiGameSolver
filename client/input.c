@@ -8,9 +8,9 @@ typedef struct Range {
 
 STATIC inline int cmp_title_key(string t, const char* key, int keylen) {
 	const char* tp = STR_PTR(t);
-	int			tl = STR_LEN(t);
-	int			m  = MIN(tl, keylen);
-	int			c  = memcmp(tp, key, (size_t)m);
+	int         tl = STR_LEN(t);
+	int         m  = MIN(tl, keylen);
+	int         c  = memcmp(tp, key, (size_t)m);
 	if (c != 0) return c;
 	if (tl < keylen) return -1;
 	if (tl > keylen) return 1;
@@ -45,7 +45,7 @@ STATIC Range prefix_range_titles(const Graph* g, const char* prefix, int plen) {
 	if (lo >= up) return ans;
 
 	ans.start = (int)lo;
-	ans.end	  = (int)up - 1;
+	ans.end   = (int)up - 1;
 	return ans;
 }
 
@@ -54,8 +54,8 @@ STATIC const Graph* pretty_g = NULL;
 STATIC void completion_cb(const char* buf, linenoiseCompletions* lc) {
 	if (!buf || !pretty_g) return;
 
-	int	  blen = (int)strlen(buf);
-	Range p	   = prefix_range_titles(pretty_g, buf, blen);
+	int   blen = (int)strlen(buf);
+	Range p    = prefix_range_titles(pretty_g, buf, blen);
 	if (p.start == -1) return;
 
 	int count = p.end - p.start + 1;
@@ -76,8 +76,8 @@ STATIC void completion_cb(const char* buf, linenoiseCompletions* lc) {
 STATIC char* hints_cb(const char* buf, int* color, int* bold) {
 	if (!buf || !pretty_g) return NULL;
 
-	int	  blen = (int)strlen(buf);
-	Range p	   = prefix_range_titles(pretty_g, buf, blen);
+	int   blen = (int)strlen(buf);
+	Range p    = prefix_range_titles(pretty_g, buf, blen);
 	if (p.start == -1) {
 		return strdup("\x1b[31m (not found)\x1b[0m");
 	}
@@ -99,9 +99,9 @@ STATIC char* hints_cb(const char* buf, int* color, int* bold) {
 		return NULL;
 	}
 
-	const char* s	 = STR_PTR(t) + blen;
-	int			slen = STR_LEN(t) - blen;
-	char*		out	 = (char*)malloc((size_t)slen + 1);
+	const char* s    = STR_PTR(t) + blen;
+	int         slen = STR_LEN(t) - blen;
+	char*       out  = (char*)malloc((size_t)slen + 1);
 	memcpy(out, s, (size_t)slen);
 	out[slen] = '\0';
 	return out;

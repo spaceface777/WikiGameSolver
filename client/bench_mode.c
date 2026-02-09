@@ -1,10 +1,10 @@
 #include <float.h>
 
 typedef struct {
-	u32		 n;
-	u32*	 gid;
-	u32*	 alias;
-	float*	 prob;
+	u32      n;
+	u32*     gid;
+	u32*     alias;
+	float*   prob;
 	uint64_t rng;
 } PRSampler;
 
@@ -37,17 +37,17 @@ STATIC bool prsampler_build(PRSampler* S, const double* pr, u32 N, uint64_t seed
 	S->rng = seed ? seed : 0x9e3779b97f4a7c15ULL;
 	S->n   = N;
 
-	S->gid	 = (u32*)malloc((size_t)N * sizeof(u32));
+	S->gid   = (u32*)malloc((size_t)N * sizeof(u32));
 	S->alias = (u32*)malloc((size_t)N * sizeof(u32));
-	S->prob	 = (float*)malloc((size_t)N * sizeof(float));
+	S->prob  = (float*)malloc((size_t)N * sizeof(float));
 	if (!S->gid || !S->alias || !S->prob) {
 		prsampler_free(S);
 		return false;
 	}
 
-	double* q	  = (double*)malloc((size_t)N * sizeof(double));
-	u32*	small = (u32*)malloc((size_t)N * sizeof(u32));
-	u32*	large = (u32*)malloc((size_t)N * sizeof(u32));
+	double* q     = (double*)malloc((size_t)N * sizeof(double));
+	u32*    small = (u32*)malloc((size_t)N * sizeof(u32));
+	u32*    large = (u32*)malloc((size_t)N * sizeof(u32));
 	if (!q || !small || !large) {
 		free(q);
 		free(small);
@@ -74,7 +74,7 @@ STATIC bool prsampler_build(PRSampler* S, const double* pr, u32 N, uint64_t seed
 	}
 
 	double scale = (double)N / sum;
-	u32	   ns = 0, nl = 0;
+	u32    ns = 0, nl = 0;
 	for (u32 i = 0; i < N; i++) {
 		q[i] *= scale;
 		if (q[i] < 1.0) small[ns++] = i;
@@ -88,7 +88,7 @@ STATIC bool prsampler_build(PRSampler* S, const double* pr, u32 N, uint64_t seed
 		double ps = q[s];
 		if (ps < 0.0) ps = 0.0;
 		if (ps > 1.0) ps = 1.0;
-		S->prob[s]	= (float)ps;
+		S->prob[s]  = (float)ps;
 		S->alias[s] = l;
 
 		q[l] = (q[l] + q[s]) - 1.0;
@@ -97,13 +97,13 @@ STATIC bool prsampler_build(PRSampler* S, const double* pr, u32 N, uint64_t seed
 	}
 
 	while (nl) {
-		u32 i		= large[--nl];
-		S->prob[i]	= 1.0f;
+		u32 i       = large[--nl];
+		S->prob[i]  = 1.0f;
 		S->alias[i] = i;
 	}
 	while (ns) {
-		u32 i		= small[--ns];
-		S->prob[i]	= 1.0f;
+		u32 i       = small[--ns];
+		S->prob[i]  = 1.0f;
 		S->alias[i] = i;
 	}
 
@@ -114,9 +114,9 @@ STATIC bool prsampler_build(PRSampler* S, const double* pr, u32 N, uint64_t seed
 }
 
 STATIC u32 prsampler_next(PRSampler* S) {
-	u32	   i = (u32)(rng64(&S->rng) % (uint64_t)S->n);
+	u32    i = (u32)(rng64(&S->rng) % (uint64_t)S->n);
 	double u = rng_double01(&S->rng);
-	u32	   j = (u < (double)S->prob[i]) ? i : S->alias[i];
+	u32    j = (u < (double)S->prob[i]) ? i : S->alias[i];
 	return S->gid[j];
 }
 
@@ -133,9 +133,9 @@ STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth) {
 
 	fprintf(stdout, "[bench] iters=%u max_depth=%u (pagerank alpha=1.6)\n", iters, (unsigned)max_depth);
 
-	u64		bench_start = get_monotonic_time();
-	u32		found		= 0;
-	PathIDs path		= {0};
+	u64     bench_start = get_monotonic_time();
+	u32     found       = 0;
+	PathIDs path        = {0};
 
 	for (u32 i = 0; i < iters; i++) {
 		u32 s = prsampler_next(&samp);
@@ -145,18 +145,18 @@ STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth) {
 		string start  = g->titles[s];
 		string target = g->titles[t];
 
-		u64	 t0 = get_monotonic_time();
+		u64  t0 = get_monotonic_time();
 		bool ok = graph_find_path_titles(g, start, target, max_depth, &path);
-		u64	 t1 = get_monotonic_time();
+		u64  t1 = get_monotonic_time();
 
 		if (ok) found++;
 		fprintf(stdout, "[bench %u/%u] %.3f ms %.*s -> %.*s %s\n", i + 1, iters, (double)(t1 - t0) / 1e6,
 				STR_LEN(start), STR_PTR(start), STR_LEN(target), STR_PTR(target), ok ? "FOUND" : "MISS");
 	}
 
-	u64	   bench_end = get_monotonic_time();
-	double wall		 = (double)(bench_end - bench_start) / 1e9;
-	double qps		 = wall > 0.0 ? (double)iters / wall : 0.0;
+	u64    bench_end = get_monotonic_time();
+	double wall      = (double)(bench_end - bench_start) / 1e9;
+	double qps       = wall > 0.0 ? (double)iters / wall : 0.0;
 	fprintf(stdout, "[bench] wall=%.3fs qps=%.2f found=%u/%u\n", wall, qps, found, iters);
 
 	prsampler_free(&samp);

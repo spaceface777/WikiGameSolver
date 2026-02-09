@@ -18,7 +18,7 @@ STATIC void db_fail(const char* what) {
 	} while (0)
 
 enum {
-	LINK_FLAG_IS_RENAME	 = 1u << 0,
+	LINK_FLAG_IS_RENAME  = 1u << 0,
 	LINK_FLAG_IS_INFOBOX = 1u << 1,
 };
 
@@ -53,16 +53,16 @@ STATIC char* read_file_all(const char* path, long* out_len) {
 STATIC char* lzma_decompress_alloc(const char* in, long in_len, long* out_len) {
 	puts("decompressing db file...");
 	lzma_stream strm = LZMA_STREAM_INIT;
-	lzma_ret	ret	 = lzma_stream_decoder(&strm, UINT64_MAX, 0);
+	lzma_ret    ret  = lzma_stream_decoder(&strm, UINT64_MAX, 0);
 	if (ret != LZMA_OK) {
 		fprintf(stderr, "error: cannot initialize lzma decoder\n");
 		exit(1);
 	}
 
-	char*		 out	  = NULL;
-	size_t		 out_size = 0;
-	size_t		 in_pos	  = 0;
-	const size_t CHUNK	  = 1u << 24;
+	char*        out      = NULL;
+	size_t       out_size = 0;
+	size_t       in_pos   = 0;
+	const size_t CHUNK    = 1u << 24;
 
 	while (1) {
 		strm.next_in  = (const uint8_t*)(in + in_pos);
@@ -130,8 +130,8 @@ STATIC void validate_graph_fully(Graph* g) {
 		u32 end = g->out_offsets[u + 1];
 		if (beg > end || end > g->L) db_fail("out_offsets bounds");
 		if (end > beg) {
-			const u8* p	   = u24_cptr(g->out_edges24, beg);
-			u32		  prev = u24_load(p);
+			const u8* p    = u24_cptr(g->out_edges24, beg);
+			u32       prev = u24_load(p);
 			if (prev >= g->N) db_fail("out edge id out of range");
 			p += 3;
 			for (u32 idx = beg + 1; idx < end; idx++, p += 3) {
@@ -161,8 +161,8 @@ STATIC void validate_graph_fully(Graph* g) {
 		if (e->src >= g->N || e->dest >= g->N) db_fail("unredir src/dest out of range");
 		if (e->redir_idx >= g->nr_redir_titles) db_fail("unredir redir_idx out of range");
 		if (i > 0) {
-			UnredirEdge* p		= &g->unredir[i - 1];
-			bool		 sorted = (p->src < e->src) || (p->src == e->src && p->dest < e->dest) ||
+			UnredirEdge* p      = &g->unredir[i - 1];
+			bool         sorted = (p->src < e->src) || (p->src == e->src && p->dest < e->dest) ||
 						  (p->src == e->src && p->dest == e->dest && p->redir_idx <= e->redir_idx);
 			if (!sorted) db_fail("unredir not sorted");
 			if (p->src == e->src && p->dest == e->dest) db_fail("duplicate unredir (src,dest)");
@@ -187,7 +187,7 @@ STATIC void validate_graph_fully(Graph* g) {
 // Load graph from a raw (decompressed) buffer. The buffer is freed after loading.
 STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 	puts("Processing data...");
-	char* p	  = raw;
+	char* p   = raw;
 	char* end = raw + raw_len;
 
 	DB_REQUIRE(p, end, 4, "magic");
@@ -268,16 +268,16 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 	p += total_title_bytes;
 
 	// --- v2 footer (optional)
-	u32			un_n = 0, rt_n = 0, rt_bytes = 0;
-	u32			rt_pad			   = 0;
-	const u32*	unredir_srcdestidx = NULL;
-	const u8*	redir_lens		   = NULL;
-	const char* redir_bytes		   = NULL;
-	const u8*	link_flags		   = NULL;
-	u32			link_flags_bytes   = 0;
-	u64			link_flags_rename  = 0;
-	u64			link_flags_infobox = 0;
-	u64			link_flags_unknown = 0;
+	u32         un_n = 0, rt_n = 0, rt_bytes = 0;
+	u32         rt_pad             = 0;
+	const u32*  unredir_srcdestidx = NULL;
+	const u8*   redir_lens         = NULL;
+	const char* redir_bytes        = NULL;
+	const u8*   link_flags         = NULL;
+	u32         link_flags_bytes   = 0;
+	u64         link_flags_rename  = 0;
+	u64         link_flags_infobox = 0;
+	u64         link_flags_unknown = 0;
 
 	if (dump_format >= 2) {
 		DB_REQUIRE(p, end, 12u, "v2 footer");
@@ -309,7 +309,7 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 		size_t trailing_after_v2 = (size_t)(end - p);
 		if (trailing_after_v2) {
 			if (trailing_after_v2 < (size_t)g->L) db_fail("link_flags truncated");
-			link_flags		 = (const u8*)p;
+			link_flags       = (const u8*)p;
 			link_flags_bytes = g->L;
 			p += g->L;
 		}
@@ -321,15 +321,15 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 	u64 section1_outdegree_bytes  = (u64)g->N * (u64)sizeof(u16) + (u64)pad_u16 * (u64)sizeof(u16);
 	u64 section2_edges_u32_bytes  = (u64)g->L * (u64)sizeof(u32);
 	u64 section3_title_lens_bytes = (u64)g->N * (u64)sizeof(u16);
-	u64 section4_title_bytes	  = (u64)total_title_bytes;
+	u64 section4_title_bytes      = (u64)total_title_bytes;
 	u64 section5_v2_header_bytes  = (dump_format >= 2) ? (3u * (u64)sizeof(u32)) : 0u;
-	u64 section5_unredir_bytes	  = (u64)un_n * 3u * (u64)sizeof(u32);
+	u64 section5_unredir_bytes    = (u64)un_n * 3u * (u64)sizeof(u32);
 	u64 section5_redir_lens_bytes = (u64)rt_n + (u64)rt_pad;
 	u64 section5_redir_text_bytes = (u64)rt_bytes;
 	u64 section5_v2_total_bytes =
 		section5_v2_header_bytes + section5_unredir_bytes + section5_redir_lens_bytes + section5_redir_text_bytes;
 	u64 section6_link_flags_bytes = (u64)link_flags_bytes;
-	u64 known_total_bytes		  = header_bytes + section1_outdegree_bytes + section2_edges_u32_bytes +
+	u64 known_total_bytes         = header_bytes + section1_outdegree_bytes + section2_edges_u32_bytes +
 							section3_title_lens_bytes + section4_title_bytes + section5_v2_total_bytes +
 							section6_link_flags_bytes;
 
@@ -386,9 +386,9 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 
 	// Pack outgoing edges + indegree counts + validate adjacency sorted/range
 	for (u32 u = 0; u < g->N; u++) {
-		u32	 beg	  = g->out_offsets[u];
-		u32	 end2	  = g->out_offsets[u + 1];
-		u32	 prev	  = 0;
+		u32  beg      = g->out_offsets[u];
+		u32  end2     = g->out_offsets[u + 1];
+		u32  prev     = 0;
 		bool has_prev = false;
 
 		for (u32 idx = beg; idx < end2; idx++) {
@@ -397,7 +397,7 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 			// adjacency should be sorted (generator assumption) => assert now
 			if (has_prev && v < prev) db_fail("adjacency not sorted");
 			has_prev = true;
-			prev	 = v;
+			prev     = v;
 
 			u24_store(u24_ptr(g->out_edges24, idx), v);
 			g->in_offsets[v + 1]++; // indegree count
@@ -412,7 +412,7 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 
 	// In edges (u24)
 	size_t in_bytes = (size_t)g->L * 3u + 4u;
-	g->in_edges24	= (u8*)malloc(in_bytes);
+	g->in_edges24   = (u8*)malloc(in_bytes);
 	if (!g->in_edges24) db_fail("OOM in_edges24");
 	memset(g->in_edges24 + (size_t)g->L * 3u, 0, 4); // padding
 
@@ -422,7 +422,7 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 
 	// Fill incoming edges by reusing edges_u32 (still in blob)
 	for (u32 src = 0; src < g->N; src++) {
-		u32 beg	 = g->out_offsets[src];
+		u32 beg  = g->out_offsets[src];
 		u32 end2 = g->out_offsets[src + 1];
 		for (u32 idx = beg; idx < end2; idx++) {
 			u32 dst = edges_u32[idx];
@@ -434,7 +434,7 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 
 	// v2: unredir + redirect titles copied out
 	g->nr_unredir = un_n;
-	g->unredir	  = NULL;
+	g->unredir    = NULL;
 	if (un_n) {
 		g->unredir = (UnredirEdge*)malloc((size_t)un_n * sizeof(UnredirEdge));
 		if (!g->unredir) db_fail("OOM unredir");
@@ -448,15 +448,15 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 			memcpy(&dst, q + 1, sizeof(u32));
 			memcpy(&ridx, q + 2, sizeof(u32));
 			q += 3;
-			e->src		 = src;
-			e->dest		 = dst;
+			e->src       = src;
+			e->dest      = dst;
 			e->redir_idx = ridx;
 		}
 	}
 
-	g->nr_redir_titles	 = rt_n;
-	g->redir_titles		 = NULL;
-	g->redir_arena		 = NULL;
+	g->nr_redir_titles   = rt_n;
+	g->redir_titles      = NULL;
+	g->redir_arena       = NULL;
 	g->redir_arena_bytes = rt_bytes;
 
 	if (rt_n) {
@@ -506,19 +506,19 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 STATIC void graph_load_from_file(Graph* g, const char* path) {
 	puts("reading db file into memory...");
 	long  comp_len = 0;
-	char* comp	   = read_file_all(path, &comp_len);
+	char* comp     = read_file_all(path, &comp_len);
 	log_ts("read db file");
 
-	char* raw	  = NULL;
+	char* raw     = NULL;
 	long  raw_len = 0;
 
 #ifdef NO_COMPRESSION
-	raw		= comp;
+	raw     = comp;
 	raw_len = comp_len;
 #else
 	bool is_raw = (comp_len >= 4) && (memcmp(comp, "WIKI", 4) == 0);
 	if (is_raw) {
-		raw		= comp;
+		raw     = comp;
 		raw_len = comp_len;
 	} else {
 		raw = lzma_decompress_alloc(comp, comp_len, &raw_len);

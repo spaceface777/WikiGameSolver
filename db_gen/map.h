@@ -1,7 +1,7 @@
-#define malloc			GC_malloc
+#define malloc          GC_malloc
 #define calloc(n, size) GC_malloc((n) * (size))
-#define realloc			GC_realloc
-#define free(x)			((void)x)
+#define realloc         GC_realloc
+#define free(x)         ((void)x)
 #include "map_impl.h"
 #undef malloc
 #undef calloc
@@ -47,6 +47,7 @@ static inline void map_clone_string(void* dst, void* src) {
 static inline void map_free_nop(void* p) {
 	(void)p;
 }
+
 static inline void map_free_string(void* p) {
 	(void)p;
 
@@ -164,7 +165,7 @@ static inline void map_string_stringptr_delete(map_string_stringptr* m, string k
 		int _t2 = (m).key_values.len;                                \
 		for (int _t1 = 0; _t1 < _t2; ++_t1) {                        \
 			int _t3 = (m).key_values.len - _t2;                      \
-			_t2		= (m).key_values.len;                            \
+			_t2     = (m).key_values.len;                            \
 			if (_t3 < 0) {                                           \
 				_t1 = -1;                                            \
 				continue;                                            \
@@ -178,7 +179,7 @@ static inline void map_string_stringptr_delete(map_string_stringptr* m, string k
 		}                                                            \
 	}
 
-#define FOR_IN_MAP_STRING_INT(m, k, v, body)	   FOR_IN_MAP(m, k, string, v, int, body)
-#define FOR_IN_MAP_INT_STRING(m, k, v, body)	   FOR_IN_MAP(m, k, int, v, string, body)
-#define FOR_IN_MAP_INT_INT(m, k, v, body)		   FOR_IN_MAP(m, k, int, v, int, body)
+#define FOR_IN_MAP_STRING_INT(m, k, v, body)       FOR_IN_MAP(m, k, string, v, int, body)
+#define FOR_IN_MAP_INT_STRING(m, k, v, body)       FOR_IN_MAP(m, k, int, v, string, body)
+#define FOR_IN_MAP_INT_INT(m, k, v, body)          FOR_IN_MAP(m, k, int, v, int, body)
 #define FOR_IN_MAP_STRING_STRINGPTR(m, k, v, body) FOR_IN_MAP(m, k, string, v, string*, body)

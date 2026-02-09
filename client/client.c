@@ -31,8 +31,8 @@
 // ----------------------------------------------------------------------------
 // Configuration
 // ----------------------------------------------------------------------------
-#define MAX_DEPTH			100
-#define PATH_CAP			256 // hard cap for internal arrays; must be > max_depth and <= 255+1
+#define MAX_DEPTH           100
+#define PATH_CAP            256 // hard cap for internal arrays; must be > max_depth and <= 255+1
 #define DUMP_FORMAT_VERSION 2
 
 // Toggle expensive validation of unredir edges (binary search in adjacency).
@@ -68,25 +68,25 @@ typedef struct Graph {
 
 	// Titles are sorted lexicographically (required for binary search and pretty input).
 	string* titles;
-	char*	titles_arena;
-	u32		titles_arena_bytes;
+	char*   titles_arena;
+	u32     titles_arena_bytes;
 
 	// v2 redirect helpers
-	u32			 nr_unredir;
+	u32          nr_unredir;
 	UnredirEdge* unredir;
 
 	// Outgoing CSR
 	u32* out_offsets; // N+1
-	u8*	 out_edges24; // 3*L + 4 padding
+	u8*  out_edges24; // 3*L + 4 padding
 
 	// Incoming CSR
 	u32* in_offsets; // N+1
-	u8*	 in_edges24; // 3*L + 4 padding
+	u8*  in_edges24; // 3*L + 4 padding
 
 	string* redir_titles;
-	u32		nr_redir_titles;
-	u32		redir_arena_bytes;
-	char*	redir_arena;
+	u32     nr_redir_titles;
+	u32     redir_arena_bytes;
+	char*   redir_arena;
 
 	// Optional trailing section in newer v2 dumps: one u8 flag byte per edge.
 	u8* edge_flags; // length L when present, else NULL
@@ -97,7 +97,7 @@ typedef struct Graph {
 } Graph;
 
 typedef struct PathIDs {
-	u32 len;		   // number of nodes in path
+	u32 len;           // number of nodes in path
 	u32 ids[PATH_CAP]; // node IDs
 } PathIDs;
 
@@ -106,11 +106,11 @@ typedef struct PathIDs {
 // ----------------------------------------------------------------------------
 STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len);
 STATIC void graph_load_from_file(Graph* g, const char* path);
-STATIC u32	graph_find_id(const Graph* g, string title); // returns UINT32_MAX if not found
+STATIC u32  graph_find_id(const Graph* g, string title); // returns UINT32_MAX if not found
 STATIC void graph_print_path(const Graph* g, const PathIDs* path);
 STATIC void graph_write_path_fd(const Graph* g, int fd, const PathIDs* path);
 STATIC bool graph_find_path_titles(const Graph* g, string start, string target, u8 max_depth, PathIDs* out);
-STATIC int	unredir_lookup(const Graph* g, u32 src, u32 dest);
+STATIC int  unredir_lookup(const Graph* g, u32 src, u32 dest);
 STATIC void pagerank_build(Graph* g, int iters, double damp, double eps);
 STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth);
 STATIC void diff_run(const char* old_path, const char* new_path, int topk);
@@ -184,8 +184,8 @@ STATIC void usage(const char* prog) {
 
 STATIC bool parse_u32(const char* s, u32* out) {
 	if (!s || !*s) return false;
-	char* end		= NULL;
-	errno			= 0;
+	char* end       = NULL;
+	errno           = 0;
 	unsigned long v = strtoul(s, &end, 10);
 	if (errno != 0 || end == s || *end != '\0') return false;
 	if (v > 0xFFFFFFFFul) return false;
@@ -214,17 +214,17 @@ int main(int argc, char** argv) {
 	const char* default_db = "db.bin";
 #endif
 
-	const char* db_path		  = default_db;
-	u32			max_depth_u32 = (u32)MAX_DEPTH;
-	bool		bench_mode	  = false;
-	u32			bench_iters	  = 0;
-	bool		diff_mode	  = false;
+	const char* db_path       = default_db;
+	u32         max_depth_u32 = (u32)MAX_DEPTH;
+	bool        bench_mode    = false;
+	u32         bench_iters   = 0;
+	bool        diff_mode     = false;
 	const char* diff_old_path = NULL;
 	const char* diff_new_path = NULL;
 
 #ifdef ENABLE_SERVER
 	bool server_mode = false;
-	u32	 listen_port = 0;
+	u32  listen_port = 0;
 #endif
 
 #ifdef ENABLE_PRETTY_INPUT
@@ -235,7 +235,7 @@ int main(int argc, char** argv) {
 
 	// Collect positional args after options
 	const char* pos[2] = {0, 0};
-	int			pos_n  = 0;
+	int         pos_n  = 0;
 
 	// Parse argv
 	for (int i = 1; i < argc; i++) {
@@ -266,13 +266,13 @@ int main(int argc, char** argv) {
 			if (strcmp(a, "-b") == 0 || strncmp(a, "--bench", 7) == 0) {
 				const char* eq = NULL;
 				if (strncmp(a, "--bench", 7) == 0) eq = a + 7;
-				const char* v	= take_opt_value(&i, argc, argv, "--bench", eq);
-				u32			tmp = 0;
+				const char* v   = take_opt_value(&i, argc, argv, "--bench", eq);
+				u32         tmp = 0;
 				if (!parse_u32(v, &tmp) || tmp == 0) {
 					fprintf(stderr, "error: invalid --bench '%s' (must be >=1)\n", v);
 					return 2;
 				}
-				bench_mode	= true;
+				bench_mode  = true;
 				bench_iters = tmp;
 				continue;
 			}
@@ -286,7 +286,7 @@ int main(int argc, char** argv) {
 					fprintf(stderr, "error: --diff requires OLD_DB and NEW_DB paths\n");
 					return 2;
 				}
-				diff_mode	  = true;
+				diff_mode     = true;
 				diff_old_path = argv[++i];
 				diff_new_path = argv[++i];
 				continue;
@@ -297,7 +297,7 @@ int main(int argc, char** argv) {
 				const char* eq = NULL;
 				if (strncmp(a, "--db", 4) == 0) eq = a + 4; // may be "" or "=..."
 				const char* v = take_opt_value(&i, argc, argv, "--db", eq);
-				db_path		  = v;
+				db_path       = v;
 				continue;
 			}
 
@@ -305,8 +305,8 @@ int main(int argc, char** argv) {
 			if (strcmp(a, "-m") == 0 || strncmp(a, "--max-depth", 11) == 0) {
 				const char* eq = NULL;
 				if (strncmp(a, "--max-depth", 11) == 0) eq = a + 11;
-				const char* v	= take_opt_value(&i, argc, argv, "--max-depth", eq);
-				u32			tmp = 0;
+				const char* v   = take_opt_value(&i, argc, argv, "--max-depth", eq);
+				u32         tmp = 0;
 				if (!parse_u32(v, &tmp) || tmp < 1 || tmp > 254) {
 					fprintf(stderr, "error: invalid --max-depth '%s' (must be 1..254)\n", v);
 					return 2;
@@ -320,8 +320,8 @@ int main(int argc, char** argv) {
 			if (strcmp(a, "-l") == 0 || strncmp(a, "--listen", 8) == 0) {
 				const char* eq = NULL;
 				if (strncmp(a, "--listen", 8) == 0) eq = a + 8;
-				const char* v	= take_opt_value(&i, argc, argv, "--listen", eq);
-				u32			tmp = 0;
+				const char* v   = take_opt_value(&i, argc, argv, "--listen", eq);
+				u32         tmp = 0;
 				if (!parse_u32(v, &tmp) || tmp < 1 || tmp > 65535) {
 					fprintf(stderr, "error: invalid port '%s' (must be 1..65535)\n", v);
 					return 2;
@@ -402,7 +402,7 @@ int main(int argc, char** argv) {
 		string target = string_clone(STR((char*)pos[1], (int)strlen(pos[1])));
 
 		PathIDs path_ids = {0};
-		bool	ok		 = graph_find_path_titles(&G, start, target, (u8)max_depth_u32, &path_ids);
+		bool    ok       = graph_find_path_titles(&G, start, target, (u8)max_depth_u32, &path_ids);
 		if (ok) graph_print_path(&G, &path_ids);
 		else println(SLIT("No path found"));
 
@@ -435,7 +435,7 @@ int main(int argc, char** argv) {
 		Timer t = timer_begin("search");
 
 		PathIDs path_ids = {0};
-		bool	ok		 = graph_find_path_titles(&G, start, target, (u8)max_depth_u32, &path_ids);
+		bool    ok       = graph_find_path_titles(&G, start, target, (u8)max_depth_u32, &path_ids);
 
 		if (ok) graph_print_path(&G, &path_ids);
 		else println(SLIT("\n\nNo path found."));

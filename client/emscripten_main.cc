@@ -31,7 +31,7 @@ int init(long temp_addr, val cb) {
 
 	puts("decompressing db file...");
 	lzma_stream strm = LZMA_STREAM_INIT;
-	lzma_ret	ret	 = lzma_stream_decoder(&strm, UINT64_MAX, 0);
+	lzma_ret    ret  = lzma_stream_decoder(&strm, UINT64_MAX, 0);
 	if (ret != LZMA_OK) {
 		printf("Error: Cannot initialize decoder\n");
 		exit(1);
@@ -40,7 +40,7 @@ int init(long temp_addr, val cb) {
 	const int LZMA_OUT_BUF_SIZE = 1 << 21;
 
 	char*  output_buffer = NULL;
-	size_t output_size	 = 0;
+	size_t output_size   = 0;
 
 	do {
 		int nread = cb().as<int>();
@@ -81,7 +81,7 @@ val search(std::string start_, std::string target_) {
 	val arr = val::array();
 
 	PathIDs path_ids = {.len = 0, .ids = {0}};
-	bool	ok		 = graph_find_path_titles(&G, start, target, MAX_DEPTH, &path_ids);
+	bool    ok       = graph_find_path_titles(&G, start, target, MAX_DEPTH, &path_ids);
 
 	if (!ok || path_ids.len == 0) {
 		puts("No path found.");
@@ -90,7 +90,7 @@ val search(std::string start_, std::string target_) {
 
 	// First entry: the start title
 	{
-		u32	   id	 = path_ids.ids[0];
+		u32    id    = path_ids.ids[0];
 		string title = G.titles[id];
 		arr.call<void>("push", std::string(STR_PTR(title), STR_LEN(title)));
 	}
@@ -103,9 +103,9 @@ val search(std::string start_, std::string target_) {
 		int ridx = unredir_lookup(&G, a, b);
 		if (ridx >= 0 && (u32)ridx < G.nr_redir_titles) {
 			// Format: "redirect_title (redirects to dest_title)"
-			string		redir_title = G.redir_titles[ridx];
-			string		dest_title	= G.titles[b];
-			std::string formatted	= std::string(STR_PTR(redir_title), STR_LEN(redir_title)) + " (redirects to " +
+			string      redir_title = G.redir_titles[ridx];
+			string      dest_title  = G.titles[b];
+			std::string formatted   = std::string(STR_PTR(redir_title), STR_LEN(redir_title)) + " (redirects to " +
 									std::string(STR_PTR(dest_title), STR_LEN(dest_title)) + ")";
 			arr.call<void>("push", formatted);
 		} else {

@@ -2,11 +2,11 @@
 
 typedef struct ThreadData {
 	const Graph* g;
-	string		 start;
-	string		 target;
-	int			 connfd;
+	string       start;
+	string       target;
+	int          connfd;
 
-	bool	found;
+	bool    found;
 	PathIDs path;
 } ThreadData;
 
@@ -14,7 +14,7 @@ STATIC _Atomic int nr_jobs = 0;
 
 STATIC void* worker_main(void* ptr) {
 	ThreadData* d = (ThreadData*)ptr;
-	d->found	  = graph_find_path_titles(d->g, d->start, d->target, (u8)MAX_DEPTH, &d->path);
+	d->found      = graph_find_path_titles(d->g, d->start, d->target, (u8)MAX_DEPTH, &d->path);
 	return NULL;
 }
 
@@ -47,9 +47,9 @@ STATIC void server_listen(const Graph* g, int port) {
 	}
 
 	struct sockaddr_in servaddr = {0};
-	servaddr.sin_family			= AF_INET;
-	servaddr.sin_addr.s_addr	= htonl(INADDR_ANY);
-	servaddr.sin_port			= htons((u16)port);
+	servaddr.sin_family         = AF_INET;
+	servaddr.sin_addr.s_addr    = htonl(INADDR_ANY);
+	servaddr.sin_port           = htons((u16)port);
 
 	if (bind(sockfd, (void*)&servaddr, sizeof(servaddr)) != 0) {
 		perror("bind");
@@ -62,11 +62,11 @@ STATIC void server_listen(const Graph* g, int port) {
 	printf("Listening on port %d...\n", port);
 
 	threadpool pool = thpool_init(sysconf(_SC_NPROCESSORS_ONLN));
-	char	   buf_data[65536];
+	char       buf_data[65536];
 
 	while (1) {
 		struct sockaddr_in cli;
-		socklen_t		   len = sizeof(cli);
+		socklen_t          len = sizeof(cli);
 
 		int connfd = accept(sockfd, (void*)&cli, &len);
 		if (connfd < 0) {
@@ -75,7 +75,7 @@ STATIC void server_listen(const Graph* g, int port) {
 		}
 
 		const int buf_size = (int)sizeof(buf_data) - 1;
-		char*	  buf	   = buf_data;
+		char*     buf      = buf_data;
 		memset(buf, 0, (size_t)buf_size);
 
 		int nread = (int)read(connfd, buf, (size_t)buf_size);
@@ -97,7 +97,7 @@ STATIC void server_listen(const Graph* g, int port) {
 		nread -= used;
 
 		int slen = 0;
-		int t	 = 0;
+		int t    = 0;
 		if (sscanf(buf, "%d%n", &slen, &t) != 1) goto err;
 		if (slen < 0 || slen > (buf_size >> 1)) goto err;
 		buf += t;
@@ -127,12 +127,12 @@ STATIC void server_listen(const Graph* g, int port) {
 		nread -= slen;
 
 		ThreadData td = {
-			.g		= g,
-			.start	= start,
+			.g      = g,
+			.start  = start,
 			.target = target,
 			.connfd = connfd,
-			.found	= false,
-			.path	= {0},
+			.found  = false,
+			.path   = {0},
 		};
 
 		thpool_add_work(pool, (void*)worker_send_and_free, memdup(&td, sizeof(td)));

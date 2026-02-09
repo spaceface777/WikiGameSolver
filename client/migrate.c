@@ -19,10 +19,11 @@ typedef struct Entry {
 
 static int current_version_hdr = 0;
 
-static int	  nr_entries = 0;
+static int    nr_entries = 0;
 static Entry* entries;
 
 #define DUMP_FORMAT_VERSION 1
+
 static void load_mem(char* path) {
 	puts("reading db file into memory...");
 
@@ -55,7 +56,7 @@ static void load_mem(char* path) {
 	}
 
 	unsigned int version = *(unsigned int*)p;
-	current_version_hdr	 = version;
+	current_version_hdr  = version;
 	p += sizeof(version);
 	u8 dump_format = version & 0xff;
 	if (dump_format != DUMP_FORMAT_VERSION) {
@@ -93,9 +94,9 @@ static void load_mem(char* path) {
 	}
 
 	for (int i = 0; i < nr_entries; i++) {
-		Entry* e		= &entries[i];
-		u16	   nr_links = ARR_LEN(e->links);
-		e->links		= ARR(p, nr_links);
+		Entry* e        = &entries[i];
+		u16    nr_links = ARR_LEN(e->links);
+		e->links        = ARR(p, nr_links);
 		p += nr_links * sizeof(u32);
 	}
 	for (int i = 0; i < nr_entries; i++) {
@@ -109,7 +110,7 @@ static void load_mem(char* path) {
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &entries[i];
 
-		u16 l	 = STR_LEN(e->title);
+		u16 l    = STR_LEN(e->title);
 		e->title = STR(p, l);
 		p += l;
 	}
@@ -126,9 +127,9 @@ int main(int argc, char** argv) {
 
 	// remove duplicate links in each entry
 	for (int i = 0; i < nr_entries; i++) {
-		Entry* e		 = &entries[i];
-		u16	   num_links = ARR_LEN(e->links);
-		u32*   links	 = ARR_PTR(e->links);
+		Entry* e         = &entries[i];
+		u16    num_links = ARR_LEN(e->links);
+		u32*   links     = ARR_PTR(e->links);
 		if (num_links == 0) continue;
 		int j = 0;
 		for (int k = 1; k < num_links; k++) {

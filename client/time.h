@@ -7,10 +7,10 @@
 // typedef uint64_t u64;
 // typedef double   f64;
 
-#define nanosecond	(1ull)
+#define nanosecond  (1ull)
 #define microsecond (1000ull * nanosecond)
 #define millisecond (1000ull * microsecond)
-#define second		(1000ull * millisecond)
+#define second      (1000ull * millisecond)
 
 #ifdef _WIN32
 #include <windows.h>
@@ -44,7 +44,7 @@ static inline const char* fmt_timebuf(u64 dt, char* buf, size_t sz) {
 
 /* --- Timer struct for scoped timing --- */
 typedef struct {
-	u64			start;
+	u64         start;
 	const char* label;
 } Timer;
 
@@ -54,7 +54,7 @@ static inline Timer timer_begin(const char* label) {
 }
 
 static inline void timer_end(Timer t) {
-	u64	 end = get_monotonic_time();
+	u64  end = get_monotonic_time();
 	char tmp[64];
 	fmt_timebuf(end - t.start, tmp, sizeof(tmp));
 	fprintf(stderr, "[%s] took %s\n", t.label ? t.label : "step", tmp);
@@ -67,7 +67,7 @@ static inline void timer_end(Timer t) {
 		{                                                         \
 			block;                                                \
 		}                                                         \
-		u64	 __t1 = get_monotonic_time();                         \
+		u64  __t1 = get_monotonic_time();                         \
 		char __buf[64];                                           \
 		fmt_timebuf(__t1 - __t0, __buf, sizeof(__buf));           \
 		fprintf(stderr, "[%s] finished in %s\n", (label), __buf); \
@@ -77,7 +77,7 @@ static inline void timer_end(Timer t) {
 static inline void log_ts(const char* msg) {
 	static u64 base = 0;
 	if (!base) base = get_monotonic_time();
-	u64	 now = get_monotonic_time();
+	u64  now = get_monotonic_time();
 	char tmp[64];
 	fmt_timebuf(now - base, tmp, sizeof(tmp));
 	fprintf(stderr, "[%s] %s\n", tmp, msg);

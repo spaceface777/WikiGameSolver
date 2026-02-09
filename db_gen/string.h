@@ -68,6 +68,7 @@ public:
 	inline string(const std::string& a) : ptr((uintptr_t)a.c_str()), len(a.size()) {
 		LOG;
 	};
+
 	inline string(const std::string_view& a) : ptr((uintptr_t)a.data()), len(a.size()) {
 		LOG;
 	};
@@ -160,6 +161,7 @@ public:
 	operator std::string() const {
 		return std::string(p(), len);
 	}
+
 	operator std::string_view() const {
 		return std::string_view(p(), len);
 	}
@@ -185,7 +187,7 @@ public:
 		string result;
 		char*  x = (char*)STRING_H_MALLOC(len + 1);
 		memcpy((void*)x, (void*)(uintptr_t)ptr, len);
-		x[len]	   = 0;
+		x[len]     = 0;
 		result.ptr = (uintptr_t)x;
 		result.len = len;
 		// result.is_owned = 1;
@@ -255,7 +257,7 @@ public:
 
 	string trim() const {
 		int start = 0;
-		int end	  = len;
+		int end   = len;
 		while (start < end && isspace(((char*)(uintptr_t)ptr)[start])) start++;
 		while (end > start && isspace(((char*)(uintptr_t)ptr)[end - 1])) end--;
 		return slice(start, end);

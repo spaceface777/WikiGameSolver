@@ -9,7 +9,7 @@
 #include <stdlib.h>
 
 #include <iostream>
-// #include <map>
+#include <map>
 #include <set>
 
 void nop(void* p) {
@@ -25,12 +25,12 @@ void nop(void* p) {
 
 #include "map.h"
 
-static int		 DUMP_DATE			 = 221201;
+static int       DUMP_DATE           = 221201;
 static const int DUMP_FORMAT_VERSION = 2;
 
-map_string_string	 string_data = new_map_string_string();
-map_string_stringptr link_map	 = new_map_string_stringptr();
-typedef map			 map_string_u8ptr;
+map_string_string    string_data = new_map_string_string();
+map_string_stringptr link_map    = new_map_string_stringptr();
+typedef map          map_string_u8ptr;
 
 static inline map_string_u8ptr new_map_string_u8ptr() {
 	return new_map(sizeof(string), sizeof(uint8_t*), map_hash_string, map_eq_string, map_clone_string, map_free_string);
@@ -44,12 +44,12 @@ static inline uint8_t** map_string_u8ptr_get_check(map_string_u8ptr* m, string k
 	return (uint8_t**)map_get_check(m, &k);
 }
 
-map_string_u8ptr  link_flag_map					 = new_map_string_u8ptr();
-map_string_string redirects						 = new_map_string_string();
-static bool		  g_prune_unused_redirect_titles = false;
+map_string_u8ptr  link_flag_map                  = new_map_string_u8ptr();
+map_string_string redirects                      = new_map_string_string();
+static bool       g_prune_unused_redirect_titles = false;
 
 enum LINK_FLAGS : uint8_t {
-	LINK_IS_RENAME	= 1 << 0,
+	LINK_IS_RENAME  = 1 << 0,
 	LINK_IS_INFOBOX = 1 << 1,
 };
 
@@ -164,8 +164,8 @@ static inline void collect_links_in_range(std::string_view article, xmlChar* art
 		article_[link_start + 2] = (xmlChar)toupper((unsigned char)article_[link_start + 2]);
 
 		std::string_view raw_target = "";
-		std::string_view raw_label	= "";
-		std::size_t		 pipe_idx	= find_in_range(article, "|", link_start + 2, link_end);
+		std::string_view raw_label  = "";
+		std::size_t      pipe_idx   = find_in_range(article, "|", link_start + 2, link_end);
 		if (pipe_idx != std::string::npos) {
 			raw_target = std::string_view(article.data() + link_start + 2, pipe_idx - link_start - 2);
 			raw_label  = std::string_view(article.data() + pipe_idx + 1, link_end - pipe_idx - 1);
@@ -218,7 +218,7 @@ int parse_xml() {
 
 	bool in_page = false;
 
-	string					  page_title = "";
+	string                    page_title = "";
 	std::map<string, uint8_t> page_links;
 
 	size_t count = 0;
@@ -246,12 +246,12 @@ int parse_xml() {
 				if (xmlStrcmp(tag, (const xmlChar*)"title") == 0) {
 					xmlTextReaderRead(reader);
 					const xmlChar* title = xmlTextReaderConstValue(reader);
-					page_title			 = get_string((const char*)title);
+					page_title           = get_string((const char*)title);
 				}
 
 				else if (xmlStrcmp(tag, (const xmlChar*)"text") == 0) {
 					xmlTextReaderRead(reader);
-					xmlChar*		 article_ = (xmlChar*)xmlTextReaderConstValue(reader);
+					xmlChar*         article_ = (xmlChar*)xmlTextReaderConstValue(reader);
 					std::string_view article  = (const char*)article_;
 
 					size_t last_end = 0, link_start = 0;
@@ -259,9 +259,9 @@ int parse_xml() {
 						size_t info_start = find_in_range(article, "{{", last_end, link_start);
 						if (info_start != std::string::npos) {
 							size_t infoEnd = info_start + 2;
-							int	   n	   = 1;
+							int    n       = 1;
 							while (n > 0) {
-								size_t nextOpen	 = find_in_range(article, "{{", infoEnd);
+								size_t nextOpen  = find_in_range(article, "{{", infoEnd);
 								size_t nextClose = find_in_range(article, "}}", infoEnd);
 								if (nextClose == std::string::npos) break;
 								if (nextOpen != std::string::npos && nextOpen < nextClose) {
@@ -294,7 +294,7 @@ int parse_xml() {
 							if (tag_end != std::string::npos) {
 								std::string_view full_opening_tag =
 									std::string_view(article.data() + tag_start + 1, tag_end - tag_start - 1);
-								size_t			 space_idx = find_in_range(full_opening_tag, " ");
+								size_t           space_idx = find_in_range(full_opening_tag, " ");
 								std::string_view tag_name  = space_idx == std::string::npos
 																 ? full_opening_tag
 																 : full_opening_tag.substr(0, space_idx);
@@ -305,7 +305,7 @@ int parse_xml() {
 										continue;
 									}
 									std::string_view closing_tag = tag_name == "ref" ? "</ref>" : "</nowiki>";
-									size_t closing_tag_start	 = find_in_range(article, closing_tag, tag_end + 1);
+									size_t closing_tag_start     = find_in_range(article, closing_tag, tag_end + 1);
 									if (closing_tag_start != std::string::npos) {
 										last_end = closing_tag_start + closing_tag.size();
 										continue;
@@ -332,8 +332,8 @@ int parse_xml() {
 
 				else if (xmlStrcmp(tag, (const xmlChar*)"redirect") == 0) {
 					const char* title_ = (const char*)xmlTextReaderGetAttribute(reader, (const xmlChar*)"title");
-					string		title  = title_;
-					char*		hash   = (char*)memchr(title_, '#', title.len);
+					string      title  = title_;
+					char*       hash   = (char*)memchr(title_, '#', title.len);
 					if (hash) title = std::string_view(title_, hash - title_);
 					map_string_string_set(&redirects, page_title, get_string(title));
 
@@ -348,9 +348,9 @@ int parse_xml() {
 			if (in_page && xmlStrcmp(end_tag, (const xmlChar*)"page") == 0) {
 				in_page = false;
 
-				string*	 linkptr = (string*)GC_malloc(sizeof(string) * (page_links.size() + 1));
+				string*  linkptr = (string*)GC_malloc(sizeof(string) * (page_links.size() + 1));
 				uint8_t* flagptr = (uint8_t*)GC_malloc(sizeof(uint8_t) * (page_links.size() + 1));
-				size_t	 i		 = 0;
+				size_t   i       = 0;
 				for (auto& kv : page_links) {
 					linkptr[i] = kv.first;
 					flagptr[i] = kv.second;
@@ -377,19 +377,19 @@ int parse_xml() {
 }
 
 struct LinkWithFlags {
-	int		id;
+	int     id;
 	uint8_t flags;
 };
 
 struct PageLinks {
-	int			   n;
-	int			   cap;
+	int            n;
+	int            cap;
 	LinkWithFlags* edges;
 };
 
 PageLinks* links;
-string*	   titles;
-int		   page_count;
+string*    titles;
+int        page_count;
 
 static inline int int_cmp(const void* a, const void* b) {
 	int x = *(const int*)a;
@@ -422,7 +422,7 @@ static inline int int_bsearch(const int* a, int n, int x) {
 static inline uint64_t dedupe_sorted_links(PageLinks* l) {
 	if (l->n <= 1) return 0;
 	uint64_t removed = 0;
-	int		 j		 = 0;
+	int      j       = 0;
 	for (int k = 1; k < l->n; k++) {
 		if (l->edges[k].id != l->edges[j].id) {
 			l->edges[++j] = l->edges[k];
@@ -448,16 +448,16 @@ static inline int string_cmp_qsort(const void* a, const void* b) {
    --------------------------------------------- */
 
 struct Cand {
-	int		 dest;
+	int      dest;
 	uint16_t redir_len;
-	string	 redir_title;
+	string   redir_title;
 	uint32_t redir_in;
 };
 
 struct UnredirTmp {
 	uint32_t src;
 	uint32_t dest;
-	string	 redir_title;
+	string   redir_title;
 };
 
 struct UnredirEdge {
@@ -467,10 +467,10 @@ struct UnredirEdge {
 };
 
 static UnredirEdge* unredir_edges = nullptr;
-static uint32_t		unredir_n	  = 0;
+static uint32_t     unredir_n     = 0;
 
-static string*	redir_titles	   = nullptr; /* filtered + sorted */
-static uint32_t redir_titles_n	   = 0;
+static string*  redir_titles       = nullptr; /* filtered + sorted */
+static uint32_t redir_titles_n     = 0;
 static uint32_t redir_titles_bytes = 0;
 
 static inline int cand_cmp(const void* a, const void* b) {
@@ -535,7 +535,7 @@ int trim_empty_pages() {
 
 	for (int i = 0; i < page_count; i++) {
 		for (int j = 0; j < links[i].n; j++) {
-			int	 l = links[i].edges[j].id;
+			int  l = links[i].edges[j].id;
 			auto b = std::lower_bound(empty_pages.begin(), empty_pages.end(), l);
 			if (b != empty_pages.end() && *b == l) links[i].edges[j].id = -1;
 		}
@@ -557,8 +557,8 @@ int trim_empty_pages() {
 		}
 	}
 
-	int		   l	   = page_count - (int)empty_pages.size();
-	string*	   titles_ = (string*)GC_malloc(l * sizeof(string));
+	int        l       = page_count - (int)empty_pages.size();
+	string*    titles_ = (string*)GC_malloc(l * sizeof(string));
 	PageLinks* links_  = (PageLinks*)GC_malloc(l * sizeof(PageLinks));
 	memset(links_, 0, l * sizeof(PageLinks));
 
@@ -570,19 +570,19 @@ int trim_empty_pages() {
 			continue;
 		}
 		titles_[titles_len++] = titles[i];
-		links_[links_len++]	  = links[i];
+		links_[links_len++]   = links[i];
 	}
 
 	GC_free(titles);
 	GC_free(links);
-	titles	   = titles_;
-	links	   = links_;
+	titles     = titles_;
+	links      = links_;
 	page_count = l;
 
 	for (int j = 0; j < links_len; j++) {
 		for (int k = 0; k < links[j].n; k++) {
 			int* q = &links[j].edges[k].id;
-			*q	   = old_id_to_new_id[*q];
+			*q     = old_id_to_new_id[*q];
 		}
 	}
 
@@ -595,7 +595,7 @@ int trim_empty_pages() {
 
 void write_db() {
 	fprintf(stderr, "Writing db...\n");
-	FILE* f	  = stdout;
+	FILE* f   = stdout;
 	char* buf = (char*)GC_malloc(16 << 20);
 	setvbuf(f, buf, _IOFBF, 16 << 20);
 
@@ -635,7 +635,7 @@ void write_db() {
 	}
 
 	uint32_t outdegree_pad_u16 = (page_count % 4) ? (uint32_t)(4 - (page_count % 4)) : 0u;
-	uint32_t redir_len_pad	   = (4u - (redir_titles_n & 3u)) & 3u;
+	uint32_t redir_len_pad     = (4u - (redir_titles_n & 3u)) & 3u;
 
 	for (int i = 0; i < page_count; i++) {
 		uint16_t num_links = (uint16_t)links[i].n;
@@ -658,7 +658,7 @@ void write_db() {
 	for (int i = 0; i < page_count; i++) {
 		for (int j = 0; j < links[i].n; j++) {
 			int32_t link = links[i].edges[j].id;
-			char*	p	 = (char*)&link;
+			char*   p    = (char*)&link;
 			if (p[3] != 0) {
 				perror("link overflow");
 			}
@@ -696,8 +696,8 @@ void write_db() {
 	   ------------------------------ */
 
 	{
-		uint32_t n		= unredir_n;
-		uint32_t rt		= redir_titles_n;
+		uint32_t n      = unredir_n;
+		uint32_t rt     = redir_titles_n;
 		uint32_t rbytes = redir_titles_bytes;
 
 		if (fwrite(&n, sizeof(n), 1, f) != 1) {
@@ -779,14 +779,14 @@ void write_db() {
 							(uint64_t)sizeof(total_links) + (uint64_t)sizeof(total_title_bytes);
 	uint64_t outdegree_bytes =
 		(uint64_t)page_count * (uint64_t)sizeof(uint16_t) + (uint64_t)outdegree_pad_u16 * (uint64_t)sizeof(uint16_t);
-	uint64_t edge_bytes				= (uint64_t)total_links * 4u;
-	uint64_t title_len_bytes		= (uint64_t)page_count * (uint64_t)sizeof(uint16_t);
-	uint64_t title_bytes			= (uint64_t)total_title_bytes;
-	uint64_t v2_header_bytes		= 3u * (uint64_t)sizeof(uint32_t);
+	uint64_t edge_bytes             = (uint64_t)total_links * 4u;
+	uint64_t title_len_bytes        = (uint64_t)page_count * (uint64_t)sizeof(uint16_t);
+	uint64_t title_bytes            = (uint64_t)total_title_bytes;
+	uint64_t v2_header_bytes        = 3u * (uint64_t)sizeof(uint32_t);
 	uint64_t v2_unredir_tuple_bytes = (uint64_t)unredir_n * 3u * (uint64_t)sizeof(uint32_t);
-	uint64_t v2_redir_len_bytes		= (uint64_t)redir_titles_n + (uint64_t)redir_len_pad;
-	uint64_t v2_redir_title_bytes	= (uint64_t)redir_titles_bytes;
-	uint64_t v2_total_bytes	  = v2_header_bytes + v2_unredir_tuple_bytes + v2_redir_len_bytes + v2_redir_title_bytes;
+	uint64_t v2_redir_len_bytes     = (uint64_t)redir_titles_n + (uint64_t)redir_len_pad;
+	uint64_t v2_redir_title_bytes   = (uint64_t)redir_titles_bytes;
+	uint64_t v2_total_bytes   = v2_header_bytes + v2_unredir_tuple_bytes + v2_redir_len_bytes + v2_redir_title_bytes;
 	uint64_t link_flags_bytes = (uint64_t)total_links;
 	uint64_t total_output_bytes =
 		header_bytes + outdegree_bytes + edge_bytes + title_len_bytes + title_bytes + v2_total_bytes + link_flags_bytes;
@@ -816,7 +816,7 @@ int resolve_link_id_len(const string& t, int* out_redir_len) {
 	// Follow: t -> redirects[t] -> redirects[...] ... until a real page is found
 	// Returns: final page id, and number of redirect hops taken.
 	std::set<string> seen;
-	string			 cur = t;
+	string           cur = t;
 
 	for (int hop = 0; hop < MAX_REDIRECT_HOPS; ++hop) {
 		int id = bsearch(cur);
@@ -838,7 +838,7 @@ int resolve_link_id(const string& t) {
 	// Follow: t -> redirects[t] -> redirects[...] ... until a real page is found
 	// Stops on: page found, no redirect, cycle, or hop cap.
 	std::set<string> seen;
-	string			 cur = t;
+	string           cur = t;
 
 	for (int hop = 0; hop < MAX_REDIRECT_HOPS; ++hop) {
 		// If this title exists as a real page, we’re done.
@@ -885,49 +885,49 @@ static void build_unredirect_db() {
 	})
 
 	/* pass 2: choose 0/1 redirect witness per (src,dest) when no direct link exists */
-	UnredirTmp* tmp		= nullptr;
-	uint32_t	tmp_n	= 0;
-	uint32_t	tmp_cap = 0;
+	UnredirTmp* tmp     = nullptr;
+	uint32_t    tmp_n   = 0;
+	uint32_t    tmp_cap = 0;
 
 	FOR_IN_MAP_STRING_STRINGPTR(link_map, title, links_, {
 		int src = bsearch(title);
 		if (src == -1) continue;
 
 		/* per-page scratch */
-		int* direct		= nullptr;
-		int	 direct_n	= 0;
-		int	 direct_cap = 0;
+		int* direct     = nullptr;
+		int  direct_n   = 0;
+		int  direct_cap = 0;
 
-		Cand* cand	   = nullptr;
-		int	  cand_n   = 0;
-		int	  cand_cap = 0;
+		Cand* cand     = nullptr;
+		int   cand_n   = 0;
+		int   cand_cap = 0;
 
 		string* ll = *links_;
 		for (int i = 0; ll[i].p() != nullptr; i++) {
 			int redir_len = 0;
-			int dest	  = resolve_link_id_len(ll[i], &redir_len);
+			int dest      = resolve_link_id_len(ll[i], &redir_len);
 			if (dest == -1) continue;
 
 			if (redir_len == 0) {
 				if (direct_n == direct_cap) {
 					direct_cap = direct_cap * 2 + 16;
-					direct	   = (int*)GC_realloc(direct, sizeof(int) * direct_cap);
+					direct     = (int*)GC_realloc(direct, sizeof(int) * direct_cap);
 				}
 				direct[direct_n++] = dest;
 			} else {
 				if (cand_n == cand_cap) {
 					cand_cap = cand_cap * 2 + 32;
-					cand	 = (Cand*)GC_realloc(cand, sizeof(Cand) * cand_cap);
+					cand     = (Cand*)GC_realloc(cand, sizeof(Cand) * cand_cap);
 				}
 
-				int		 in = 0;
-				int32_t* p	= map_string_int_get_check(&redir_in, ll[i]);
+				int      in = 0;
+				int32_t* p  = map_string_int_get_check(&redir_in, ll[i]);
 				if (p) in = (int)(*p);
 
-				cand[cand_n].dest		 = dest;
-				cand[cand_n].redir_len	 = (uint16_t)redir_len;
+				cand[cand_n].dest        = dest;
+				cand[cand_n].redir_len   = (uint16_t)redir_len;
 				cand[cand_n].redir_title = ll[i]; /* first hop the user clicks */
-				cand[cand_n].redir_in	 = (uint32_t)in;
+				cand[cand_n].redir_in    = (uint32_t)in;
 				cand_n++;
 			}
 		}
@@ -951,17 +951,17 @@ static void build_unredirect_db() {
 			int i = 0;
 			while (i < cand_n) {
 				int dest = cand[i].dest;
-				int j	 = i + 1;
+				int j    = i + 1;
 				while (j < cand_n && cand[j].dest == dest) j++;
 
 				if (!int_bsearch(direct, direct_n, dest)) {
 					/* pick minimal redirect chain length (sorted), then highest incoming (sorted), then alpha */
 					if (tmp_n == tmp_cap) {
 						tmp_cap = tmp_cap * 2 + 1024;
-						tmp		= (UnredirTmp*)GC_realloc(tmp, sizeof(UnredirTmp) * tmp_cap);
+						tmp     = (UnredirTmp*)GC_realloc(tmp, sizeof(UnredirTmp) * tmp_cap);
 					}
-					tmp[tmp_n].src		   = (uint32_t)src;
-					tmp[tmp_n].dest		   = (uint32_t)dest;
+					tmp[tmp_n].src         = (uint32_t)src;
+					tmp[tmp_n].dest        = (uint32_t)dest;
 					tmp[tmp_n].redir_title = cand[i].redir_title;
 					tmp_n++;
 				}
@@ -974,14 +974,14 @@ static void build_unredirect_db() {
 	fprintf(stderr, "Unredirect tuples (pre-table): %u\n", tmp_n);
 
 	unredir_edges = nullptr;
-	unredir_n	  = tmp_n;
+	unredir_n     = tmp_n;
 
 	if (tmp_n) {
 		unredir_edges = (UnredirEdge*)GC_malloc(sizeof(UnredirEdge) * tmp_n);
 	}
 
-	redir_titles	   = nullptr;
-	redir_titles_n	   = 0;
+	redir_titles       = nullptr;
+	redir_titles_n     = 0;
 	redir_titles_bytes = 0;
 
 	/* build redirect title table (pruned or full) */
@@ -998,8 +998,8 @@ static void build_unredirect_db() {
 				if (n == 0 || !(r[i] == r[n - 1])) r[n++] = r[i];
 			}
 
-			redir_titles	   = (string*)GC_malloc(sizeof(string) * n);
-			redir_titles_n	   = n;
+			redir_titles       = (string*)GC_malloc(sizeof(string) * n);
+			redir_titles_n     = n;
 			redir_titles_bytes = 0;
 
 			for (uint32_t i = 0; i < n; i++) {
@@ -1008,7 +1008,7 @@ static void build_unredirect_db() {
 			}
 		}
 	} else {
-		string*	 r	   = nullptr;
+		string*  r     = nullptr;
 		uint32_t r_n   = 0;
 		uint32_t r_cap = 0;
 
@@ -1016,7 +1016,7 @@ static void build_unredirect_db() {
 			(void)redir_target;
 			if (r_n == r_cap) {
 				r_cap = r_cap * 2 + 1024;
-				r	  = (string*)GC_realloc(r, sizeof(string) * r_cap);
+				r     = (string*)GC_realloc(r, sizeof(string) * r_cap);
 			}
 			r[r_n++] = redir_title;
 		})
@@ -1030,8 +1030,8 @@ static void build_unredirect_db() {
 				if (n == 0 || !(r[i] == r[n - 1])) r[n++] = r[i];
 			}
 
-			redir_titles	   = (string*)GC_malloc(sizeof(string) * n);
-			redir_titles_n	   = n;
+			redir_titles       = (string*)GC_malloc(sizeof(string) * n);
+			redir_titles_n     = n;
 			redir_titles_bytes = 0;
 
 			for (uint32_t i = 0; i < n; i++) {
@@ -1048,8 +1048,8 @@ static void build_unredirect_db() {
 			fprintf(stderr, "internal error: missing redirect title\n");
 			exit(1);
 		}
-		unredir_edges[i].src	   = tmp[i].src;
-		unredir_edges[i].dest	   = tmp[i].dest;
+		unredir_edges[i].src       = tmp[i].src;
+		unredir_edges[i].dest      = tmp[i].dest;
 		unredir_edges[i].redir_idx = (uint32_t)ridx;
 	}
 
@@ -1101,7 +1101,7 @@ int main(int argc, char** argv) {
 	FOR_IN_MAP_STRING_STRINGPTR(link_map, title, links_, {
 		int idx = bsearch(title);
 		if (idx == -1) continue;
-		string*	  ll	  = *links_;
+		string*   ll      = *links_;
 		uint8_t** flagspp = map_string_u8ptr_get_check(&link_flag_map, title);
 		if (!flagspp) {
 			fprintf(stderr, "internal error: missing link flags for page\n");
@@ -1116,11 +1116,11 @@ int main(int argc, char** argv) {
 			if (link_idx == -1) continue;
 
 			if (l->n == l->cap) {
-				l->cap	 = l->cap * 2 + 1;
+				l->cap   = l->cap * 2 + 1;
 				l->edges = (LinkWithFlags*)GC_realloc(l->edges, l->cap * sizeof(LinkWithFlags));
 			}
 
-			l->edges[l->n].id	 = link_idx;
+			l->edges[l->n].id    = link_idx;
 			l->edges[l->n].flags = lf[i];
 			l->n++;
 		}

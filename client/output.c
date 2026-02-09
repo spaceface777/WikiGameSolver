@@ -4,7 +4,7 @@ STATIC int unredir_lookup(const Graph* g, u32 src, u32 dest) {
 	int l = 0;
 	int r = (int)g->nr_unredir - 1;
 	while (l <= r) {
-		int			 m = (l + r) / 2;
+		int          m = (l + r) / 2;
 		UnredirEdge* e = g->unredir + m;
 
 		if (e->src < src) l = m + 1;

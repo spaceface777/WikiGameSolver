@@ -50,12 +50,12 @@ STATIC bool string_eq_ascii_ci_raw(const char* a, int al, const char* b, int bl)
 // Binary search for exact title match in sorted titles array.
 // Returns UINT32_MAX if not found.
 STATIC u32 graph_find_id(const Graph* g, string title) {
-	const char* key	   = STR_PTR(title);
-	int			keylen = STR_LEN(title);
+	const char* key    = STR_PTR(title);
+	int         keylen = STR_LEN(title);
 
 	u32 l = 0, r = (g->N == 0 ? 0 : g->N - 1);
 	while (g->N && l <= r) {
-		u32	   m = l + (r - l) / 2;
+		u32    m = l + (r - l) / 2;
 		string t = g->titles[m];
 
 		int c = string_cmp_raw(key, keylen, STR_PTR(t), STR_LEN(t));
@@ -72,9 +72,9 @@ STATIC u32 graph_find_id(const Graph* g, string title) {
 // Linear scan fallback for case-insensitive exact match.
 // Returns the unique matching ID, or UINT32_MAX for none/ambiguous.
 STATIC u32 graph_find_id_case_insensitive_unique(const Graph* g, string title) {
-	const char* key	   = STR_PTR(title);
-	int			keylen = STR_LEN(title);
-	u32			found  = UINT32_MAX;
+	const char* key    = STR_PTR(title);
+	int         keylen = STR_LEN(title);
+	u32         found  = UINT32_MAX;
 	for (u32 i = 0; i < g->N; i++) {
 		string t = g->titles[i];
 		if (!string_eq_ascii_ci_raw(key, keylen, STR_PTR(t), STR_LEN(t))) continue;

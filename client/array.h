@@ -24,8 +24,8 @@ INLINE bool array_eq(array a, array b) {
 }
 
 INLINE array array_clone(array s) {
-	int	  l	  = ARR_LEN(s);
-	char* p	  = ARR_PTR(s);
+	int   l   = ARR_LEN(s);
+	char* p   = ARR_PTR(s);
 	char* ptr = malloc(l + 1);
 	memcpy(ptr, p, l);
 	ptr[l] = 0;
@@ -81,7 +81,7 @@ INLINE void array_free(array* str) {
 #else
 
 typedef struct {
-	void*		   ptr;
+	void*          ptr;
 	unsigned short len;
 } array;
 

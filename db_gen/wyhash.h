@@ -25,10 +25,10 @@
 
 // likely and unlikely macros
 #if defined(__GNUC__) || defined(__INTEL_COMPILER) || defined(__clang__)
-#define _likely_(x)	  __builtin_expect(x, 1)
+#define _likely_(x)   __builtin_expect(x, 1)
 #define _unlikely_(x) __builtin_expect(x, 0)
 #else
-#define _likely_(x)	  (x)
+#define _likely_(x)   (x)
 #define _unlikely_(x) (x)
 #endif
 
@@ -36,6 +36,7 @@
 static inline uint64_t _wyrot(uint64_t x) {
 	return (x >> 32) | (x << 32);
 }
+
 static inline void _wymum(uint64_t* A, uint64_t* B) {
 #if (WYHASH_32BIT_MUM)
 	uint64_t hh = (*A >> 32) * (*B >> 32), hl = (*A >> 32) * (uint32_t)*B, lh = (uint32_t)*A * (*B >> 32),
@@ -108,6 +109,7 @@ static inline uint64_t _wyr8(const uint8_t* p) {
 	memcpy(&v, p, 8);
 	return v;
 }
+
 static inline uint64_t _wyr4(const uint8_t* p) {
 	uint32_t v;
 	memcpy(&v, p, 4);
@@ -119,6 +121,7 @@ static inline uint64_t _wyr8(const uint8_t* p) {
 	memcpy(&v, p, 8);
 	return __builtin_bswap64(v);
 }
+
 static inline uint64_t _wyr4(const uint8_t* p) {
 	uint32_t v;
 	memcpy(&v, p, 4);
@@ -130,6 +133,7 @@ static inline uint64_t _wyr8(const uint8_t* p) {
 	memcpy(&v, p, 8);
 	return _byteswap_uint64(v);
 }
+
 static inline uint64_t _wyr4(const uint8_t* p) {
 	uint32_t v;
 	memcpy(&v, p, 4);
@@ -143,6 +147,7 @@ static inline uint64_t _wyr8(const uint8_t* p) {
 			((v << 8) & 0xff00000000) | ((v << 24) & 0xff0000000000) | ((v << 40) & 0xff000000000000) |
 			((v << 56) & 0xff00000000000000));
 }
+
 static inline uint64_t _wyr4(const uint8_t* p) {
 	uint32_t v;
 	memcpy(&v, p, 4);
@@ -152,6 +157,7 @@ static inline uint64_t _wyr4(const uint8_t* p) {
 static inline uint64_t _wyr3(const uint8_t* p, size_t k) {
 	return (((uint64_t)p[0]) << 16) | (((uint64_t)p[k >> 1]) << 8) | p[k - 1];
 }
+
 // wyhash main function
 static inline uint64_t wyhash(const void* key, size_t len, uint64_t seed, const uint64_t* secret) {
 	const uint8_t* p = (const uint8_t*)key;
@@ -223,13 +229,14 @@ static inline double wy2gau(uint64_t r) {
 
 #ifdef WYTRNG
 #include <sys/time.h>
+
 // The wytrand true random number generator, passed BigCrush.
 static inline uint64_t wytrand(uint64_t* seed) {
 	struct timeval t;
 	gettimeofday(&t, 0);
 	uint64_t teed = (((uint64_t)t.tv_sec) << 32) | t.tv_usec;
-	teed		  = _wymix(teed ^ _wyp[0], *seed ^ _wyp[1]);
-	*seed		  = _wymix(teed ^ _wyp[0], _wyp[2]);
+	teed          = _wymix(teed ^ _wyp[0], *seed ^ _wyp[1]);
+	*seed         = _wymix(teed ^ _wyp[0], _wyp[2]);
 	return _wymix(*seed, *seed ^ _wyp[3]);
 }
 #endif
@@ -245,14 +252,14 @@ static inline uint64_t wy2u0k(uint64_t r, uint64_t k) {
 
 // make your own secret
 static inline void make_secret(uint64_t seed, uint64_t* secret) {
-	uint8_t c[] = {15,	23,	 27,  29,  30,	39,	 43,  45,  46,	51,	 53,  54,  57,	58,	 60,  71,  75,	77,
-				   78,	83,	 85,  86,  89,	90,	 92,  99,  101, 102, 105, 106, 108, 113, 114, 116, 120, 135,
+	uint8_t c[] = {15,  23,  27,  29,  30,  39,  43,  45,  46,  51,  53,  54,  57,  58,  60,  71,  75,  77,
+				   78,  83,  85,  86,  89,  90,  92,  99,  101, 102, 105, 106, 108, 113, 114, 116, 120, 135,
 				   139, 141, 142, 147, 149, 150, 153, 154, 156, 163, 165, 166, 169, 170, 172, 177, 178, 180,
 				   184, 195, 197, 198, 201, 202, 204, 209, 210, 212, 216, 225, 226, 228, 232, 240};
 	for (size_t i = 0; i < 4; i++) {
 		uint8_t ok;
 		do {
-			ok		  = 1;
+			ok        = 1;
 			secret[i] = 0;
 			for (size_t j = 0; j < 64; j += 8) secret[i] |= ((uint64_t)c[wyrand(&seed) % sizeof(c)]) << j;
 			if (secret[i] % 2 == 0) {

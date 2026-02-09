@@ -2,14 +2,14 @@
 #include <math.h>
 
 typedef struct {
-	u32	   id;
+	u32    id;
 	double score;
 } PRTop;
 
 STATIC inline void pr_swap(PRTop* a, PRTop* b) {
 	PRTop t = *a;
-	*a		= *b;
-	*b		= t;
+	*a      = *b;
+	*b      = t;
 }
 
 // min-heap by score (keep best K by evicting smallest)
@@ -23,6 +23,7 @@ STATIC void pr_heap_sift_down(PRTop* h, int n, int i) {
 		i = s;
 	}
 }
+
 STATIC void pr_heap_sift_up(PRTop* h, int i) {
 	while (i > 0) {
 		int p = (i - 1) / 2;
@@ -31,15 +32,16 @@ STATIC void pr_heap_sift_up(PRTop* h, int i) {
 		i = p;
 	}
 }
+
 STATIC void pr_topk_push(PRTop* h, int* sz, int k, u32 id, double score) {
 	if (k <= 0) return;
 	if (*sz < k) {
-		h[*sz].id	 = id;
+		h[*sz].id    = id;
 		h[*sz].score = score;
 		pr_heap_sift_up(h, *sz);
 		(*sz)++;
 	} else if (score > h[0].score) {
-		h[0].id	   = id;
+		h[0].id    = id;
 		h[0].score = score;
 		pr_heap_sift_down(h, *sz, 0);
 	}
@@ -72,8 +74,8 @@ STATIC void pagerank_build(Graph* g, int iters, double damp, double eps) {
 	if (iters < 1) iters = 1;
 	if (!(damp > 0.0f && damp < 1.0f)) damp = 0.85f;
 
-	u32		N	= g->N;
-	double* r	= (double*)malloc((size_t)N * sizeof(double));
+	u32     N   = g->N;
+	double* r   = (double*)malloc((size_t)N * sizeof(double));
 	double* nxt = (double*)malloc((size_t)N * sizeof(double));
 	if (!r || !nxt) {
 		fprintf(stderr, "error: OOM in pagerank\n");
@@ -100,15 +102,15 @@ STATIC void pagerank_build(Graph* g, int iters, double damp, double eps) {
 				continue;
 			}
 
-			double	  share = r[u] / (double)deg;
-			const u8* p		= u24_cptr(g->out_edges24, beg);
+			double    share = r[u] / (double)deg;
+			const u8* p     = u24_cptr(g->out_edges24, beg);
 			for (u32 idx = beg; idx < end; idx++, p += 3) {
 				u32 v = u24_load(p); // no checks here; validated at startup
 				nxt[v] += share;
 			}
 		}
 
-		double base		= (1.0f - damp) / (double)N;
+		double base     = (1.0f - damp) / (double)N;
 		double add_dang = (double)(dangling / (double)N);
 
 		double diff = 0.0;
@@ -127,7 +129,7 @@ STATIC void pagerank_build(Graph* g, int iters, double damp, double eps) {
 	// normalized so they still form a proper probability distribution for the
 	// sampler.
 	const double alpha = 1.6;
-	double		 sum   = 0.0;
+	double       sum   = 0.0;
 	for (u32 i = 0; i < N; i++) {
 		double biased = pow(r[i], alpha);
 		if (biased == 0.0) biased = DBL_MIN;

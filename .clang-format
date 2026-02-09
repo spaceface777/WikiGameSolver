@@ -2,7 +2,7 @@
 BasedOnStyle: llvm
 
 # Indentation
-UseTab: Always
+UseTab: ForContinuationAndIndentation
 IndentWidth: 4
 TabWidth: 4
 
@@ -26,6 +26,7 @@ BraceWrapping:
   SplitEmptyNamespace: false
   SplitEmptyRecord: false
 AllowShortFunctionsOnASingleLine: false
+SeparateDefinitionBlocks: Always
 
 # Columns
 ColumnLimit: 120

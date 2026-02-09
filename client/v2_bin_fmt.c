@@ -19,13 +19,13 @@
 typedef struct Entry {
 	string title;
 	array  links;
-	i32	   incoming_count;
-	i32	   old_id;
+	i32    incoming_count;
+	i32    old_id;
 } Entry;
 
 static int current_version_hdr = 0;
 
-static int	  nr_entries = 0;
+static int    nr_entries = 0;
 static Entry* entries;
 static Entry* new_entries;
 
@@ -36,6 +36,7 @@ void load_mem2(char* compressed_buf, long compressed_len);
 void load_mem3(char* buf);
 
 #define DUMP_FORMAT_VERSION 1
+
 void load_mem(char* path) {
 	puts("reading db file into memory...");
 
@@ -67,15 +68,15 @@ void load_mem2(char* compressed_buf, long compressed_len) {
 		if (magic != *(unsigned int*)"WIKI") {
 			puts("decompressing db file...");
 			lzma_stream strm = LZMA_STREAM_INIT;
-			lzma_ret	ret	 = lzma_stream_decoder(&strm, UINT64_MAX, 0);
+			lzma_ret    ret  = lzma_stream_decoder(&strm, UINT64_MAX, 0);
 			if (ret != LZMA_OK) {
 				printf("Error: Cannot initialize decoder\n");
 				exit(1);
 			}
 
 			char*  output_buffer = NULL;
-			size_t output_size	 = 0;
-			size_t input_pos	 = 0;
+			size_t output_size   = 0;
+			size_t input_pos     = 0;
 
 			const int LZMA_OUT_BUF_SIZE = 1 << 24;
 
@@ -110,6 +111,7 @@ void load_mem2(char* compressed_buf, long compressed_len) {
 	load_mem3(buf);
 #endif
 }
+
 void load_mem3(char* buf) {
 	puts("Processing data...");
 
@@ -160,9 +162,9 @@ void load_mem3(char* buf) {
 	}
 
 	for (int i = 0; i < nr_entries; i++) {
-		Entry* e		= &entries[i];
-		u16	   nr_links = ARR_LEN(e->links);
-		e->links		= ARR(p, nr_links);
+		Entry* e        = &entries[i];
+		u16    nr_links = ARR_LEN(e->links);
+		e->links        = ARR(p, nr_links);
 		p += nr_links * sizeof(u32);
 	}
 	for (int i = 0; i < nr_entries; i++) {
@@ -176,7 +178,7 @@ void load_mem3(char* buf) {
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &entries[i];
 
-		u16 l	 = STR_LEN(e->title);
+		u16 l    = STR_LEN(e->title);
 		e->title = STR(p, l);
 		p += l;
 	}
@@ -211,7 +213,7 @@ static void write_new(char* path) {
 		exit(1);
 	}
 
-	uint32_t total_links	   = 0;
+	uint32_t total_links       = 0;
 	uint32_t total_title_bytes = 0;
 	for (int i = 0; i < nr_entries; i++) {
 		Entry* e = &new_entries[i];
@@ -231,7 +233,7 @@ static void write_new(char* path) {
 
 	uint32_t last_num_links = 0;
 	for (int i = nr_entries - 1; i >= 0; i--) {
-		Entry*	 e		   = &new_entries[i];
+		Entry*   e         = &new_entries[i];
 		uint16_t num_links = ARR_LEN(e->links);
 		if (fwrite(&num_links, sizeof(num_links), 1, f) != 1) {
 			perror("fwrite");
@@ -257,7 +259,7 @@ static void write_new(char* path) {
 	}
 
 	for (int i = 0; i < nr_entries; i++) {
-		Entry*	 e		   = &new_entries[i];
+		Entry*   e         = &new_entries[i];
 		uint16_t num_links = ARR_LEN(e->links);
 		if (fwrite(ARR_PTR(e->links), sizeof(u32), num_links, f) != num_links) {
 			perror("fwrite");
@@ -276,7 +278,7 @@ static void write_new(char* path) {
 	}
 
 	for (int i = 0; i < nr_entries; i++) {
-		Entry*	 e		   = &new_entries[i];
+		Entry*   e         = &new_entries[i];
 		uint16_t title_len = (uint16_t)STR_LEN(e->title);
 		if (title_len > 255) {
 			fprintf(stderr, "error: title too long: %s\n", STR_PTR(e->title));
@@ -299,7 +301,7 @@ static void write_new(char* path) {
 	}
 
 	for (int i = 0; i < nr_entries; i++) {
-		Entry*	 e		   = &new_entries[i];
+		Entry*   e         = &new_entries[i];
 		uint16_t title_len = (uint16_t)STR_LEN(e->title);
 		if (fwrite(STR_PTR(e->title), 1, title_len, f) != title_len) {
 			perror("fwrite");
@@ -312,15 +314,15 @@ static void write_new(char* path) {
 }
 
 Entry* find_entry(string name) {
-	const int	len = STR_LEN(name);
+	const int   len = STR_LEN(name);
 	const char* ptr = STR_PTR(name);
 
 	int l = 0, r = nr_entries - 1;
 	while (l <= r) {
-		int	   m = l + (r - l) / 2;
+		int    m = l + (r - l) / 2;
 		Entry* e = entries + m;
 
-		const int	entry_len = STR_LEN(e->title);
+		const int   entry_len = STR_LEN(e->title);
 		const char* entry_ptr = STR_PTR(e->title);
 
 		int cmp = memcmp(ptr, entry_ptr, MIN(len, entry_len));
@@ -434,10 +436,10 @@ int main(int argc, char** argv) {
 
 	// 3. verify that all link ids are valid and strictly ascending
 	for (int i = 0; i < nr_entries; i++) {
-		Entry* e		 = &entries[i];
-		u16	   num_links = ARR_LEN(e->links);
-		u32*   links	 = ARR_PTR(e->links);
-		i64	   last_link = -1;
+		Entry* e         = &entries[i];
+		u16    num_links = ARR_LEN(e->links);
+		u32*   links     = ARR_PTR(e->links);
+		i64    last_link = -1;
 		for (int j = 0; j < num_links; j++) {
 			i64 link = links[j];
 			if (link >= nr_entries) {

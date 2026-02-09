@@ -1,13 +1,13 @@
 // Simple min-heap for keeping top-K items by score
 typedef struct {
-	u32	   id;
+	u32    id;
 	double score;
 } DiffTop;
 
 STATIC void diff_top_swap(DiffTop* a, DiffTop* b) {
 	DiffTop t = *a;
-	*a		  = *b;
-	*b		  = t;
+	*a        = *b;
+	*b        = t;
 }
 
 STATIC void diff_top_sift_down(DiffTop* h, int n, int i) {
@@ -35,12 +35,12 @@ STATIC void diff_top_sift_up(DiffTop* h, int i) {
 STATIC void diff_top_push(DiffTop* h, int* sz, int k, u32 id, double score) {
 	if (k <= 0) return;
 	if (*sz < k) {
-		h[*sz].id	 = id;
+		h[*sz].id    = id;
 		h[*sz].score = score;
 		diff_top_sift_up(h, *sz);
 		(*sz)++;
 	} else if (score > h[0].score) {
-		h[0].id	   = id;
+		h[0].id    = id;
 		h[0].score = score;
 		diff_top_sift_down(h, *sz, 0);
 	}
@@ -58,7 +58,7 @@ STATIC int diff_top_cmp_desc(const void* a, const void* b) {
 
 typedef struct {
 	string title;
-	u32	   ridx;
+	u32    ridx;
 } RedirTitleIdx;
 
 STATIC int redir_title_cmp(const void* a, const void* b) {
@@ -100,9 +100,9 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
 	// Build a sorted index of redirect titles in the new snapshot for quick lookup
 	// when testing whether an old title has become a redirect.
 	RedirTitleIdx* new_redir_index = NULL;
-	int			   new_redir_n	   = 0;
+	int            new_redir_n     = 0;
 	if (new_g.nr_redir_titles) {
-		new_redir_n		= (int)new_g.nr_redir_titles;
+		new_redir_n     = (int)new_g.nr_redir_titles;
 		new_redir_index = (RedirTitleIdx*)malloc((size_t)new_redir_n * sizeof(RedirTitleIdx));
 		if (!new_redir_index) {
 			fprintf(stderr, "error: OOM new_redir_index\n");
@@ -110,7 +110,7 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
 		}
 		for (int i = 0; i < new_redir_n; i++) {
 			new_redir_index[i].title = new_g.redir_titles[i];
-			new_redir_index[i].ridx	 = (u32)i;
+			new_redir_index[i].ridx  = (u32)i;
 		}
 		qsort(new_redir_index, (size_t)new_redir_n, sizeof(RedirTitleIdx), redir_title_cmp);
 	}
@@ -125,16 +125,16 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
 	}
 	if (new_redir_index) {
 		for (int i = 0; i < new_redir_n; i++) {
-			string rt	  = new_redir_index[i].title;
-			u32	   old_id = graph_find_id(&old_g, rt);
+			string rt     = new_redir_index[i].title;
+			u32    old_id = graph_find_id(&old_g, rt);
 			if (old_titles_redirected && old_id != UINT32_MAX) old_titles_redirected[old_id] = true;
 		}
 	}
 
 	DiffTop* add_heap = (DiffTop*)malloc((size_t)topk * sizeof(DiffTop));
 	DiffTop* del_heap = (DiffTop*)malloc((size_t)topk * sizeof(DiffTop));
-	int		 add_sz	  = 0;
-	int		 del_sz	  = 0;
+	int      add_sz   = 0;
+	int      del_sz   = 0;
 	if ((!add_heap && topk > 0) || (!del_heap && topk > 0)) {
 		fprintf(stderr, "error: OOM diff heaps\n");
 		exit(1);
@@ -166,14 +166,14 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
 	printf("\nTop %d new articles (PageRank-biased, excluding renames):\n", topk);
 	for (int i = 0; i < add_sz; i++) {
 		DiffTop* d = &add_heap[i];
-		string	 t = new_g.titles[d->id];
+		string   t = new_g.titles[d->id];
 		printf("  %2d. %.*s (PR=%.6g)\n", i + 1, STR_LEN(t), STR_PTR(t), d->score);
 	}
 
 	printf("\nTop %d deletions (PageRank-biased, excluding renames):\n", topk);
 	for (int i = 0; i < del_sz; i++) {
 		DiffTop* d = &del_heap[i];
-		string	 t = old_g.titles[d->id];
+		string   t = old_g.titles[d->id];
 		printf("  %2d. %.*s (PR=%.6g)\n", i + 1, STR_LEN(t), STR_PTR(t), d->score);
 	}
 
