@@ -32,6 +32,21 @@ STATIC inline int string_cmp(string a, string b) {
 	return string_cmp_raw(STR_PTR(a), STR_LEN(a), STR_PTR(b), STR_LEN(b));
 }
 
+STATIC inline unsigned char ascii_lower(unsigned char c) {
+	if (c >= 'A' && c <= 'Z') return (unsigned char)(c + ('a' - 'A'));
+	return c;
+}
+
+STATIC bool string_eq_ascii_ci_raw(const char* a, int al, const char* b, int bl) {
+	if (al != bl) return false;
+	for (int i = 0; i < al; i++) {
+		unsigned char ca = ascii_lower((unsigned char)a[i]);
+		unsigned char cb = ascii_lower((unsigned char)b[i]);
+		if (ca != cb) return false;
+	}
+	return true;
+}
+
 // Binary search for exact title match in sorted titles array.
 // Returns UINT32_MAX if not found.
 STATIC u32 graph_find_id(const Graph* g, string title) {
@@ -52,6 +67,21 @@ STATIC u32 graph_find_id(const Graph* g, string title) {
 		}
 	}
 	return UINT32_MAX;
+}
+
+// Linear scan fallback for case-insensitive exact match.
+// Returns the unique matching ID, or UINT32_MAX for none/ambiguous.
+STATIC u32 graph_find_id_case_insensitive_unique(const Graph* g, string title) {
+	const char* key	   = STR_PTR(title);
+	int			keylen = STR_LEN(title);
+	u32			found  = UINT32_MAX;
+	for (u32 i = 0; i < g->N; i++) {
+		string t = g->titles[i];
+		if (!string_eq_ascii_ci_raw(key, keylen, STR_PTR(t), STR_LEN(t))) continue;
+		if (found != UINT32_MAX) return UINT32_MAX;
+		found = i;
+	}
+	return found;
 }
 
 // Outgoing adjacency membership check using binary search.

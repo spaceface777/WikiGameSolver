@@ -88,6 +88,9 @@ typedef struct Graph {
 	u32		redir_arena_bytes;
 	char*	redir_arena;
 
+	// Optional trailing section in newer v2 dumps: one u8 flag byte per edge.
+	u8* edge_flags; // length L when present, else NULL
+
 	double* pagerank; // length N, NULL if not computed
 
 	bool validated;

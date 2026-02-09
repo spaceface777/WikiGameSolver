@@ -103,11 +103,10 @@ val search(std::string start_, std::string target_) {
 		int ridx = unredir_lookup(&G, a, b);
 		if (ridx >= 0 && (u32)ridx < G.nr_redir_titles) {
 			// Format: "redirect_title (redirects to dest_title)"
-			string redir_title = G.redir_titles[ridx];
-			string dest_title  = G.titles[b];
-			std::string formatted =
-				std::string(STR_PTR(redir_title), STR_LEN(redir_title)) + " (redirects to " +
-				std::string(STR_PTR(dest_title), STR_LEN(dest_title)) + ")";
+			string		redir_title = G.redir_titles[ridx];
+			string		dest_title	= G.titles[b];
+			std::string formatted	= std::string(STR_PTR(redir_title), STR_LEN(redir_title)) + " (redirects to " +
+									std::string(STR_PTR(dest_title), STR_LEN(dest_title)) + ")";
 			arr.call<void>("push", formatted);
 		} else {
 			// Use the destination title directly

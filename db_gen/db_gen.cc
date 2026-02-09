@@ -9,11 +9,13 @@
 #include <stdlib.h>
 
 #include <iostream>
+// #include <map>
 #include <set>
 
 void nop(void* p) {
 	(void)p;
 }
+
 // #define STRING_MALLOC GC_malloc
 // #define STRING_REALLOC GC_realloc
 // #define STRING_FREE GC_free
@@ -28,7 +30,79 @@ static const int DUMP_FORMAT_VERSION = 2;
 
 map_string_string	 string_data = new_map_string_string();
 map_string_stringptr link_map	 = new_map_string_stringptr();
-map_string_string	 redirects	 = new_map_string_string();
+typedef map			 map_string_u8ptr;
+
+static inline map_string_u8ptr new_map_string_u8ptr() {
+	return new_map(sizeof(string), sizeof(uint8_t*), map_hash_string, map_eq_string, map_clone_string, map_free_string);
+}
+
+static inline void map_string_u8ptr_set(map_string_u8ptr* m, string k, uint8_t* v) {
+	map_set(m, &k, &v);
+}
+
+static inline uint8_t** map_string_u8ptr_get_check(map_string_u8ptr* m, string k) {
+	return (uint8_t**)map_get_check(m, &k);
+}
+
+map_string_u8ptr  link_flag_map					 = new_map_string_u8ptr();
+map_string_string redirects						 = new_map_string_string();
+static bool		  g_prune_unused_redirect_titles = false;
+
+enum LINK_FLAGS : uint8_t {
+	LINK_IS_RENAME	= 1 << 0,
+	LINK_IS_INFOBOX = 1 << 1,
+};
+
+static void print_usage(const char* argv0) {
+	std::cerr << "Usage: " << argv0 << " [YYYY-MM-DD] [--prune-unused-redirect-titles]\n";
+	std::cerr << "  --prune-unused-redirect-titles  Keep only redirect titles referenced by unredirect edges.\n";
+}
+
+static bool parse_dump_date(const char* s, int* out_dump_date) {
+	if (strlen(s) != 10 || s[4] != '-' || s[7] != '-') return false;
+
+	int year, month, day;
+	if (sscanf(s, "%4d-%2d-%2d", &year, &month, &day) != 3) return false;
+	if (year < 2000 || year > 2099 || month < 1 || month > 12 || day < 1 || day > 31) return false;
+
+	*out_dump_date = (year - 2000) * 10000 + month * 100 + day;
+	return true;
+}
+
+// return: 0 = continue, 1 = exit success, -1 = exit error
+static int parse_cli_args(int argc, char** argv) {
+	bool has_date = false;
+
+	for (int i = 1; i < argc; i++) {
+		std::string_view arg = argv[i];
+		if (arg == "--help" || arg == "-h") {
+			print_usage(argv[0]);
+			return 1;
+		}
+		if (arg == "--prune-unused-redirect-titles") {
+			g_prune_unused_redirect_titles = true;
+			continue;
+		}
+		if (!arg.empty() && arg[0] == '-') {
+			std::cerr << "Unknown option: " << arg << std::endl;
+			print_usage(argv[0]);
+			return -1;
+		}
+		if (has_date) {
+			std::cerr << "Only one date argument (YYYY-MM-DD) is supported." << std::endl;
+			print_usage(argv[0]);
+			return -1;
+		}
+		int parsed = 0;
+		if (!parse_dump_date(argv[i], &parsed)) {
+			std::cerr << "Invalid date format. Use YYYY-MM-DD." << std::endl;
+			return -1;
+		}
+		DUMP_DATE = parsed;
+		has_date  = true;
+	}
+	return 0;
+}
 
 static inline string get_string(string s) {
 	string* p = map_string_string_get_check(&string_data, s);
@@ -54,6 +128,80 @@ static inline constexpr std::size_t find_in_range(std::string_view sv, std::stri
 	return (local == std::string_view::npos) ? std::string_view::npos : start + local;
 }
 
+static inline std::string_view trim_ascii(std::string_view s) {
+	while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\n' || s.front() == '\r')) {
+		s.remove_prefix(1);
+	}
+	while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\n' || s.back() == '\r')) {
+		s.remove_suffix(1);
+	}
+	return s;
+}
+
+static inline bool ascii_ci_equal(std::string_view a, std::string_view b) {
+	if (a.size() != b.size()) return false;
+	for (size_t i = 0; i < a.size(); i++) {
+		unsigned char ca = (unsigned char)a[i];
+		unsigned char cb = (unsigned char)b[i];
+		if (tolower(ca) != tolower(cb)) return false;
+	}
+	return true;
+}
+
+static inline void collect_links_in_range(std::string_view article, xmlChar* article_, std::size_t start,
+										  std::size_t end, bool is_infobox, std::map<string, uint8_t>& out) {
+	if (start >= end || end > article.size()) return;
+
+	std::size_t last = start;
+	while (true) {
+		std::size_t link_start = find_in_range(article, "[[", last, end);
+		if (link_start == std::string::npos || link_start >= end) break;
+
+		std::size_t link_end = find_in_range(article, "]]", link_start + 2, end);
+		if (link_end == std::string::npos || link_end > end) break;
+		if (link_start + 2 >= article.size()) break;
+
+		article_[link_start + 2] = (xmlChar)toupper((unsigned char)article_[link_start + 2]);
+
+		std::string_view raw_target = "";
+		std::string_view raw_label	= "";
+		std::size_t		 pipe_idx	= find_in_range(article, "|", link_start + 2, link_end);
+		if (pipe_idx != std::string::npos) {
+			raw_target = std::string_view(article.data() + link_start + 2, pipe_idx - link_start - 2);
+			raw_label  = std::string_view(article.data() + pipe_idx + 1, link_end - pipe_idx - 1);
+		} else {
+			raw_target = std::string_view(article.data() + link_start + 2, link_end - link_start - 2);
+		}
+
+		std::size_t hash_idx = find_in_range(raw_target, "#");
+		if (hash_idx != std::string::npos) {
+			raw_target = std::string_view(raw_target.data(), hash_idx);
+		}
+
+		std::string_view target = trim_ascii(raw_target);
+		if (target.empty()) {
+			last = link_end + 2;
+			continue;
+		}
+
+		uint8_t flags = 0;
+		if (is_infobox) flags |= LINK_IS_INFOBOX;
+		if (pipe_idx != std::string::npos) {
+			std::string_view label = trim_ascii(raw_label);
+			if (!ascii_ci_equal(target, label)) flags |= LINK_IS_RENAME;
+		}
+
+		string key = get_string(target);
+		auto   it  = out.find(key);
+		if (it == out.end()) {
+			out[key] = flags;
+		} else {
+			it->second |= flags;
+		}
+		last = link_end + 2;
+	}
+}
+
 int parse_xml() {
 	xmlParserCtxtPtr parser_context = xmlNewParserCtxt();
 	if (!parser_context) {
@@ -70,8 +218,8 @@ int parse_xml() {
 
 	bool in_page = false;
 
-	string			 page_title = "";
-	std::set<string> links_strs;
+	string					  page_title = "";
+	std::map<string, uint8_t> page_links;
 
 	size_t count = 0;
 
@@ -107,7 +255,6 @@ int parse_xml() {
 					std::string_view article  = (const char*)article_;
 
 					size_t last_end = 0, link_start = 0;
-				link_loop:
 					while ((link_start = find_in_range(article, "[[", last_end)) != std::string::npos) {
 						size_t info_start = find_in_range(article, "{{", last_end, link_start);
 						if (info_start != std::string::npos) {
@@ -125,6 +272,8 @@ int parse_xml() {
 									infoEnd = nextClose + 2;
 								}
 							}
+
+							collect_links_in_range(article, article_, info_start, infoEnd, true, page_links);
 							last_end = infoEnd;
 							continue;
 						}
@@ -169,28 +318,10 @@ int parse_xml() {
 
 						size_t end = find_in_range(article, "]]", link_start);
 						if (end == std::string::npos) break;
-
-						article_[link_start + 2] = toupper(article_[link_start + 2]);
-
-						std::string_view link = "";
-
-						size_t pipe_idx = find_in_range(article, "|", link_start, end);
-						if (pipe_idx != std::string::npos) {
-							link = std::string_view(article.data() + link_start + 2, pipe_idx - link_start - 2);
-						} else {
-							link = std::string_view(article.data() + link_start + 2, end - link_start - 2);
-						}
-
-						size_t hash_idx = find_in_range(link, "#");
-						if (hash_idx != std::string::npos) {
-							link = std::string_view(link.data(), hash_idx);
-						}
-
-						links_strs.insert(get_string(link));
+						collect_links_in_range(article, article_, link_start, end + 2, false, page_links);
 
 						last_end = end + 2;
 					}
-				linkLoopEnd:
 				}
 
 				else if (xmlStrcmp(tag, (const xmlChar*)"ns") == 0) {
@@ -217,13 +348,20 @@ int parse_xml() {
 			if (in_page && xmlStrcmp(end_tag, (const xmlChar*)"page") == 0) {
 				in_page = false;
 
-				string* linkptr = (string*)GC_malloc(sizeof(string) * (links_strs.size() + 1));
-				size_t	i		= 0;
-				for (auto& link : links_strs) linkptr[i++] = link;
+				string*	 linkptr = (string*)GC_malloc(sizeof(string) * (page_links.size() + 1));
+				uint8_t* flagptr = (uint8_t*)GC_malloc(sizeof(uint8_t) * (page_links.size() + 1));
+				size_t	 i		 = 0;
+				for (auto& kv : page_links) {
+					linkptr[i] = kv.first;
+					flagptr[i] = kv.second;
+					i++;
+				}
 				linkptr[i] = nullptr;
+				flagptr[i] = 0;
 				map_string_stringptr_set(&link_map, page_title, linkptr);
+				map_string_u8ptr_set(&link_flag_map, page_title, flagptr);
 
-				links_strs.clear();
+				page_links.clear();
 				count++;
 			}
 
@@ -238,11 +376,17 @@ int parse_xml() {
 	return count;
 }
 
-struct PageLinks {
-	int	 n;
-	int	 cap;
-	int* ids;
+struct LinkWithFlags {
+	int		id;
+	uint8_t flags;
 };
+
+struct PageLinks {
+	int			   n;
+	int			   cap;
+	LinkWithFlags* edges;
+};
+
 PageLinks* links;
 string*	   titles;
 int		   page_count;
@@ -250,6 +394,14 @@ int		   page_count;
 static inline int int_cmp(const void* a, const void* b) {
 	int x = *(const int*)a;
 	int y = *(const int*)b;
+	if (x < y) return -1;
+	if (x > y) return 1;
+	return 0;
+}
+
+static inline int edge_cmp(const void* a, const void* b) {
+	int x = ((const LinkWithFlags*)a)->id;
+	int y = ((const LinkWithFlags*)b)->id;
 	if (x < y) return -1;
 	if (x > y) return 1;
 	return 0;
@@ -265,6 +417,22 @@ static inline int int_bsearch(const int* a, int n, int x) {
 		else r = m - 1;
 	}
 	return 0;
+}
+
+static inline uint64_t dedupe_sorted_links(PageLinks* l) {
+	if (l->n <= 1) return 0;
+	uint64_t removed = 0;
+	int		 j		 = 0;
+	for (int k = 1; k < l->n; k++) {
+		if (l->edges[k].id != l->edges[j].id) {
+			l->edges[++j] = l->edges[k];
+		} else {
+			if (l->edges[k].flags < l->edges[j].flags) l->edges[j].flags = l->edges[k].flags;
+			removed++;
+		}
+	}
+	l->n = j + 1;
+	return removed;
 }
 
 static inline int string_cmp_qsort(const void* a, const void* b) {
@@ -355,86 +523,74 @@ int bsearch(std::string title) {
 }
 
 std::vector<int> empty_pages;
-int				 trim_empty_pages() {
-	 for (int i = 0; i < page_count; i++) {
-		 PageLinks* l = links + i;
-		 if (l->n == 0) {
-			 empty_pages.push_back(i);
-		 }
-	 }
 
-	 fprintf(stderr, "Empty pages: %d / %d\n", (int)empty_pages.size(), page_count);
+int trim_empty_pages() {
+	for (int i = 0; i < page_count; i++) {
+		PageLinks* l = links + i;
+		if (l->n == 0) empty_pages.push_back(i);
+	}
 
-	 if (empty_pages.size() == 0) return 0;
+	fprintf(stderr, "Empty pages: %d / %d\n", (int)empty_pages.size(), page_count);
+	if (empty_pages.empty()) return 0;
 
-	 for (int i = 0; i < page_count; i++) {
-		 for (int j = 0; j < links[i].n; j++) {
-			 int  l = links[i].ids[j];
-			 auto b = std::lower_bound(empty_pages.begin(), empty_pages.end(), l);
-			 if (b != empty_pages.end() && *b == l) {
-				 links[i].ids[j] = -1;
-			 }
-		 }
-		 int j = 0;
-		 for (int k = 0; k < links[i].n; k++) {
-			 if (links[i].ids[k] != -1) {
-				 links[i].ids[j++] = links[i].ids[k];
-			 }
-		 }
-		 links[i].n = j;
-	 }
+	for (int i = 0; i < page_count; i++) {
+		for (int j = 0; j < links[i].n; j++) {
+			int	 l = links[i].edges[j].id;
+			auto b = std::lower_bound(empty_pages.begin(), empty_pages.end(), l);
+			if (b != empty_pages.end() && *b == l) links[i].edges[j].id = -1;
+		}
+		int j = 0;
+		for (int k = 0; k < links[i].n; k++) {
+			if (links[i].edges[k].id != -1) links[i].edges[j++] = links[i].edges[k];
+		}
+		links[i].n = j;
+	}
 
-	 int* old_id_to_new_id = (int*)GC_malloc(page_count * sizeof(int));
-	 for (int i = 0; i < page_count; i++) {
-		 old_id_to_new_id[i] = i;
-	 }
+	int* old_id_to_new_id = (int*)GC_malloc(page_count * sizeof(int));
+	for (int i = 0; i < page_count; i++) old_id_to_new_id[i] = i;
 
-	 for (int i = 0; i < (int)empty_pages.size(); i++) {
-		 int id = empty_pages[i];
-		 int m	= 0;
-		 if (i == (int)empty_pages.size() - 1) {
-			 m = page_count;
-		 } else {
-			 m = empty_pages[i + 1];
-		 }
-		 for (int j = id; j < m; j++) {
-			 old_id_to_new_id[j] -= i + 1;
-		 }
-	 }
+	for (int i = 0; i < (int)empty_pages.size(); i++) {
+		int id = empty_pages[i];
+		int m  = (i == (int)empty_pages.size() - 1) ? page_count : empty_pages[i + 1];
+		for (int j = id; j < m; j++) {
+			old_id_to_new_id[j] -= i + 1;
+		}
+	}
 
-	 int		l		= page_count - empty_pages.size();
-	 string*	titles_ = (string*)GC_malloc(l * sizeof(string));
-	 PageLinks* links_	= (PageLinks*)GC_malloc(l * sizeof(PageLinks));
-	 memset(links_, 0, l * sizeof(PageLinks));
-	 int titles_len = 0;
-	 int links_len	= 0;
+	int		   l	   = page_count - (int)empty_pages.size();
+	string*	   titles_ = (string*)GC_malloc(l * sizeof(string));
+	PageLinks* links_  = (PageLinks*)GC_malloc(l * sizeof(PageLinks));
+	memset(links_, 0, l * sizeof(PageLinks));
 
-	 for (int i = 0, b = 0; i < page_count; i++) {
-		 if (b < (int)empty_pages.size() && empty_pages[b] == i) {
-			 b++;
-			 continue;
-		 }
-		 titles_[titles_len++] = titles[i];
-		 links_[links_len++]   = links[i];
-	 }
-	 GC_free(titles);
-	 GC_free(links);
-	 titles		= titles_;
-	 links		= links_;
-	 page_count = l;
+	int titles_len = 0;
+	int links_len  = 0;
+	for (int i = 0, b = 0; i < page_count; i++) {
+		if (b < (int)empty_pages.size() && empty_pages[b] == i) {
+			b++;
+			continue;
+		}
+		titles_[titles_len++] = titles[i];
+		links_[links_len++]	  = links[i];
+	}
 
-	 for (int j = 0; j < links_len; j++) {
-		 for (int k = 0; k < links[j].n; k++) {
-			 int* q = &links[j].ids[k];
-			 *q		= old_id_to_new_id[*q];
-		 }
-	 }
+	GC_free(titles);
+	GC_free(links);
+	titles	   = titles_;
+	links	   = links_;
+	page_count = l;
 
-	 GC_free(old_id_to_new_id);
+	for (int j = 0; j < links_len; j++) {
+		for (int k = 0; k < links[j].n; k++) {
+			int* q = &links[j].edges[k].id;
+			*q	   = old_id_to_new_id[*q];
+		}
+	}
 
-	 int s = empty_pages.size();
-	 empty_pages.clear();
-	 return s;
+	GC_free(old_id_to_new_id);
+
+	int s = (int)empty_pages.size();
+	empty_pages.clear();
+	return s;
 }
 
 void write_db() {
@@ -478,6 +634,9 @@ void write_db() {
 		exit(1);
 	}
 
+	uint32_t outdegree_pad_u16 = (page_count % 4) ? (uint32_t)(4 - (page_count % 4)) : 0u;
+	uint32_t redir_len_pad	   = (4u - (redir_titles_n & 3u)) & 3u;
+
 	for (int i = 0; i < page_count; i++) {
 		uint16_t num_links = (uint16_t)links[i].n;
 		if (fwrite(&num_links, sizeof(num_links), 1, f) != 1) {
@@ -487,10 +646,9 @@ void write_db() {
 	}
 
 	{
-		char zeros[8]		= {0};
-		int	 padding_needed = page_count % 4;
-		if (padding_needed) {
-			if (fwrite(zeros, 2, 4 - padding_needed, f) != 4 - padding_needed) {
+		char zeros[8] = {0};
+		if (outdegree_pad_u16) {
+			if (fwrite(zeros, sizeof(uint16_t), outdegree_pad_u16, f) != outdegree_pad_u16) {
 				perror("fwrite");
 				exit(1);
 			}
@@ -499,7 +657,7 @@ void write_db() {
 
 	for (int i = 0; i < page_count; i++) {
 		for (int j = 0; j < links[i].n; j++) {
-			int32_t link = links[i].ids[j];
+			int32_t link = links[i].edges[j].id;
 			char*	p	 = (char*)&link;
 			if (p[3] != 0) {
 				perror("link overflow");
@@ -585,10 +743,9 @@ void write_db() {
 
 		/* pad to 4 bytes */
 		{
-			char	 zeros[8] = {0};
-			uint32_t pad	  = (4 - (redir_titles_n & 3)) & 3;
-			if (pad) {
-				if (fwrite(zeros, 1, pad, f) != pad) {
+			char zeros[8] = {0};
+			if (redir_len_pad) {
+				if (fwrite(zeros, 1, redir_len_pad, f) != redir_len_pad) {
 					perror("redir_title_len_pad");
 					exit(1);
 				}
@@ -602,6 +759,51 @@ void write_db() {
 			}
 		}
 	}
+
+	/* ------------------------------
+	   section 5 (append-only):
+	   [ u8 link_flags[total_links] ]
+	   flags bitfield per flattened edge in section 2 order.
+	   ------------------------------ */
+	for (int i = 0; i < page_count; i++) {
+		for (int j = 0; j < links[i].n; j++) {
+			uint8_t flags = links[i].edges[j].flags;
+			if (fwrite(&flags, 1, 1, f) != 1) {
+				perror("link_flags");
+				exit(1);
+			}
+		}
+	}
+
+	uint64_t header_bytes = 4u + (uint64_t)sizeof(version) + (uint64_t)sizeof(num_titles) +
+							(uint64_t)sizeof(total_links) + (uint64_t)sizeof(total_title_bytes);
+	uint64_t outdegree_bytes =
+		(uint64_t)page_count * (uint64_t)sizeof(uint16_t) + (uint64_t)outdegree_pad_u16 * (uint64_t)sizeof(uint16_t);
+	uint64_t edge_bytes				= (uint64_t)total_links * 4u;
+	uint64_t title_len_bytes		= (uint64_t)page_count * (uint64_t)sizeof(uint16_t);
+	uint64_t title_bytes			= (uint64_t)total_title_bytes;
+	uint64_t v2_header_bytes		= 3u * (uint64_t)sizeof(uint32_t);
+	uint64_t v2_unredir_tuple_bytes = (uint64_t)unredir_n * 3u * (uint64_t)sizeof(uint32_t);
+	uint64_t v2_redir_len_bytes		= (uint64_t)redir_titles_n + (uint64_t)redir_len_pad;
+	uint64_t v2_redir_title_bytes	= (uint64_t)redir_titles_bytes;
+	uint64_t v2_total_bytes	  = v2_header_bytes + v2_unredir_tuple_bytes + v2_redir_len_bytes + v2_redir_title_bytes;
+	uint64_t link_flags_bytes = (uint64_t)total_links;
+	uint64_t total_output_bytes =
+		header_bytes + outdegree_bytes + edge_bytes + title_len_bytes + title_bytes + v2_total_bytes + link_flags_bytes;
+
+	fprintf(stderr, "Output size stats (bytes):\n");
+	fprintf(stderr, "  header: %llu\n", (unsigned long long)header_bytes);
+	fprintf(stderr, "  section1_outdegree_u16_plus_pad: %llu\n", (unsigned long long)outdegree_bytes);
+	fprintf(stderr, "  section2_edges_u32: %llu\n", (unsigned long long)edge_bytes);
+	fprintf(stderr, "  section3_title_lens_u16: %llu\n", (unsigned long long)title_len_bytes);
+	fprintf(stderr, "  section4_title_bytes: %llu\n", (unsigned long long)title_bytes);
+	fprintf(stderr, "  section5_v2_total: %llu\n", (unsigned long long)v2_total_bytes);
+	fprintf(stderr, "    section5_v2_header: %llu\n", (unsigned long long)v2_header_bytes);
+	fprintf(stderr, "    section5_unredir_tuples: %llu\n", (unsigned long long)v2_unredir_tuple_bytes);
+	fprintf(stderr, "    section5_redir_lens_plus_pad: %llu\n", (unsigned long long)v2_redir_len_bytes);
+	fprintf(stderr, "    section5_redir_title_bytes: %llu\n", (unsigned long long)v2_redir_title_bytes);
+	fprintf(stderr, "  section6_link_flags: %llu\n", (unsigned long long)link_flags_bytes);
+	fprintf(stderr, "  total_output_bytes: %llu\n", (unsigned long long)total_output_bytes);
 
 	fflush(f);
 	sync();
@@ -771,42 +973,75 @@ static void build_unredirect_db() {
 
 	fprintf(stderr, "Unredirect tuples (pre-table): %u\n", tmp_n);
 
-	if (tmp_n == 0) {
-		unredir_edges	   = nullptr;
-		unredir_n		   = 0;
-		redir_titles	   = nullptr;
-		redir_titles_n	   = 0;
-		redir_titles_bytes = 0;
-		return;
+	unredir_edges = nullptr;
+	unredir_n	  = tmp_n;
+
+	if (tmp_n) {
+		unredir_edges = (UnredirEdge*)GC_malloc(sizeof(UnredirEdge) * tmp_n);
 	}
 
-	/* build filtered redirect title table from tmp[].redir_title */
-	{
-		string* r = (string*)GC_malloc(sizeof(string) * tmp_n);
-		for (uint32_t i = 0; i < tmp_n; i++) r[i] = tmp[i].redir_title;
+	redir_titles	   = nullptr;
+	redir_titles_n	   = 0;
+	redir_titles_bytes = 0;
 
-		qsort(r, (size_t)tmp_n, sizeof(string), string_cmp_qsort);
+	/* build redirect title table (pruned or full) */
+	if (g_prune_unused_redirect_titles) {
+		if (tmp_n) {
+			string* r = (string*)GC_malloc(sizeof(string) * tmp_n);
+			for (uint32_t i = 0; i < tmp_n; i++) r[i] = tmp[i].redir_title;
 
-		/* uniq */
-		uint32_t n = 0;
-		for (uint32_t i = 0; i < tmp_n; i++) {
-			if (n == 0 || !(r[i] == r[n - 1])) r[n++] = r[i];
+			qsort(r, (size_t)tmp_n, sizeof(string), string_cmp_qsort);
+
+			/* uniq */
+			uint32_t n = 0;
+			for (uint32_t i = 0; i < tmp_n; i++) {
+				if (n == 0 || !(r[i] == r[n - 1])) r[n++] = r[i];
+			}
+
+			redir_titles	   = (string*)GC_malloc(sizeof(string) * n);
+			redir_titles_n	   = n;
+			redir_titles_bytes = 0;
+
+			for (uint32_t i = 0; i < n; i++) {
+				redir_titles[i] = r[i];
+				redir_titles_bytes += (uint32_t)redir_titles[i].len;
+			}
 		}
+	} else {
+		string*	 r	   = nullptr;
+		uint32_t r_n   = 0;
+		uint32_t r_cap = 0;
 
-		redir_titles	   = (string*)GC_malloc(sizeof(string) * n);
-		redir_titles_n	   = n;
-		redir_titles_bytes = 0;
+		FOR_IN_MAP(redirects, redir_title, string, redir_target, string, {
+			(void)redir_target;
+			if (r_n == r_cap) {
+				r_cap = r_cap * 2 + 1024;
+				r	  = (string*)GC_realloc(r, sizeof(string) * r_cap);
+			}
+			r[r_n++] = redir_title;
+		})
 
-		for (uint32_t i = 0; i < n; i++) {
-			redir_titles[i] = r[i];
-			redir_titles_bytes += (uint32_t)redir_titles[i].len;
+		if (r_n) {
+			qsort(r, (size_t)r_n, sizeof(string), string_cmp_qsort);
+
+			/* uniq */
+			uint32_t n = 0;
+			for (uint32_t i = 0; i < r_n; i++) {
+				if (n == 0 || !(r[i] == r[n - 1])) r[n++] = r[i];
+			}
+
+			redir_titles	   = (string*)GC_malloc(sizeof(string) * n);
+			redir_titles_n	   = n;
+			redir_titles_bytes = 0;
+
+			for (uint32_t i = 0; i < n; i++) {
+				redir_titles[i] = r[i];
+				redir_titles_bytes += (uint32_t)redir_titles[i].len;
+			}
 		}
 	}
 
 	/* materialize final unredirect edges with redir_idx, then sort */
-	unredir_edges = (UnredirEdge*)GC_malloc(sizeof(UnredirEdge) * tmp_n);
-	unredir_n	  = tmp_n;
-
 	for (uint32_t i = 0; i < tmp_n; i++) {
 		int ridx = bsearch_redir_titles(tmp[i].redir_title);
 		if (ridx == -1) {
@@ -818,7 +1053,7 @@ static void build_unredirect_db() {
 		unredir_edges[i].redir_idx = (uint32_t)ridx;
 	}
 
-	qsort(unredir_edges, (size_t)unredir_n, sizeof(UnredirEdge), unredir_edge_cmp);
+	if (unredir_n) qsort(unredir_edges, (size_t)unredir_n, sizeof(UnredirEdge), unredir_edge_cmp);
 
 	/* sanity: ensure at most one per (src,dest) */
 	for (uint32_t i = 1; i < unredir_n; i++) {
@@ -834,22 +1069,14 @@ static void build_unredirect_db() {
 }
 
 int main(int argc, char** argv) {
-	if (argc > 1) {
-		// argv[1] = "YYYY-MM-DD"
-		if (strlen(argv[1]) != 10 || argv[1][4] != '-' || argv[1][7] != '-') {
-			std::cerr << "Invalid date format. Use YYYY-MM-DD." << std::endl;
-			return 1;
-		}
-		int year, month, day;
-		if (sscanf(argv[1], "%4d-%2d-%2d", &year, &month, &day) != 3) {
-			std::cerr << "Invalid date format. Use YYYY-MM-DD." << std::endl;
-			return 1;
-		}
-		if (year < 2000 || year > 2099 || month < 1 || month > 12 || day < 1 || day > 31) {
-			std::cerr << "Invalid date." << std::endl;
-			return 1;
-		}
-		DUMP_DATE = (year - 2000) * 10000 + month * 100 + day;
+	int parse_status = parse_cli_args(argc, argv);
+	if (parse_status == 1) return 0;
+	if (parse_status == -1) return 1;
+
+	fprintf(stderr, "Options: prune_unused_redirect_titles=%s\n", g_prune_unused_redirect_titles ? "on" : "off");
+	fprintf(stderr, "Graph includes all links; per-edge flags encode infobox/rename hints in trailing section 5.\n");
+	if (!g_prune_unused_redirect_titles) {
+		fprintf(stderr, "Redirect title pruning is disabled (default).\n");
 	}
 
 	GC_INIT();
@@ -874,7 +1101,13 @@ int main(int argc, char** argv) {
 	FOR_IN_MAP_STRING_STRINGPTR(link_map, title, links_, {
 		int idx = bsearch(title);
 		if (idx == -1) continue;
-		string* ll = *links_;
+		string*	  ll	  = *links_;
+		uint8_t** flagspp = map_string_u8ptr_get_check(&link_flag_map, title);
+		if (!flagspp) {
+			fprintf(stderr, "internal error: missing link flags for page\n");
+			exit(1);
+		}
+		uint8_t* lf = *flagspp;
 
 		PageLinks* l = links + idx;
 
@@ -883,14 +1116,16 @@ int main(int argc, char** argv) {
 			if (link_idx == -1) continue;
 
 			if (l->n == l->cap) {
-				l->cap = l->cap * 2 + 1;
-				l->ids = (int*)GC_realloc(l->ids, l->cap * sizeof(int));
+				l->cap	 = l->cap * 2 + 1;
+				l->edges = (LinkWithFlags*)GC_realloc(l->edges, l->cap * sizeof(LinkWithFlags));
 			}
 
-			l->ids[l->n++] = link_idx;
+			l->edges[l->n].id	 = link_idx;
+			l->edges[l->n].flags = lf[i];
+			l->n++;
 		}
 
-		std::sort(l->ids, l->ids + l->n);
+		if (l->n) qsort(l->edges, (size_t)l->n, sizeof(LinkWithFlags), edge_cmp);
 	})
 
 	while (1) {
@@ -903,16 +1138,7 @@ int main(int argc, char** argv) {
 	uint64_t duplicates_removed = 0;
 	for (int i = 0; i < page_count; i++) {
 		PageLinks* l = links + i;
-		if (l->n == 0) continue;
-		int j = 0;
-		for (int k = 1; k < l->n; k++) {
-			if (l->ids[k] != l->ids[j]) {
-				l->ids[++j] = l->ids[k];
-			} else {
-				duplicates_removed++;
-			}
-		}
-		l->n = j + 1;
+		duplicates_removed += dedupe_sorted_links(l);
 	}
 	fprintf(stderr, "Removed %llu spurious duplicate links\n", duplicates_removed);
 

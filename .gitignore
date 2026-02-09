@@ -34,7 +34,9 @@ dep/
 *.map
 *.elf
 *.txt
+*.zip
 *.xz
+*.bz2
 .vscode/
 .idea/
 *.log

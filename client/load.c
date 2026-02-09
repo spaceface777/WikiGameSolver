@@ -17,6 +17,11 @@ STATIC void db_fail(const char* what) {
 		(p) += sizeof(dst);                        \
 	} while (0)
 
+enum {
+	LINK_FLAG_IS_RENAME	 = 1u << 0,
+	LINK_FLAG_IS_INFOBOX = 1u << 1,
+};
+
 STATIC char* read_file_all(const char* path, long* out_len) {
 	FILE* f = fopen(path, "rb");
 	if (!f) {
@@ -264,9 +269,15 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 
 	// --- v2 footer (optional)
 	u32			un_n = 0, rt_n = 0, rt_bytes = 0;
+	u32			rt_pad			   = 0;
 	const u32*	unredir_srcdestidx = NULL;
 	const u8*	redir_lens		   = NULL;
 	const char* redir_bytes		   = NULL;
+	const u8*	link_flags		   = NULL;
+	u32			link_flags_bytes   = 0;
+	u64			link_flags_rename  = 0;
+	u64			link_flags_infobox = 0;
+	u64			link_flags_unknown = 0;
 
 	if (dump_format >= 2) {
 		DB_REQUIRE(p, end, 12u, "v2 footer");
@@ -284,17 +295,59 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 			redir_lens = (const u8*)p;
 			p += rt_n;
 
-			u32 pad = (4u - (rt_n & 3u)) & 3u;
-			DB_REQUIRE(p, end, pad, "redir lens pad");
-			p += pad;
+			rt_pad = (4u - (rt_n & 3u)) & 3u;
+			DB_REQUIRE(p, end, rt_pad, "redir lens pad");
+			p += rt_pad;
 
 			DB_REQUIRE(p, end, rt_bytes, "redir bytes");
 			redir_bytes = p;
 			p += rt_bytes;
 		}
-		printf("[info] unredirect entries: %u\n", un_n);
-		printf("[info] redirect titles: %u\n", rt_n);
+
+		// Optional trailing section in newer v2 files:
+		// [ u8 link_flags[total_links] ], in flat edge order.
+		size_t trailing_after_v2 = (size_t)(end - p);
+		if (trailing_after_v2) {
+			if (trailing_after_v2 < (size_t)g->L) db_fail("link_flags truncated");
+			link_flags		 = (const u8*)p;
+			link_flags_bytes = g->L;
+			p += g->L;
+		}
 	}
+	size_t unknown_tail_bytes = (size_t)(end - p);
+
+	u64 header_bytes =
+		4u + (u64)sizeof(version) + (u64)sizeof(nr_entries) + (u64)sizeof(total_links) + (u64)sizeof(total_title_bytes);
+	u64 section1_outdegree_bytes  = (u64)g->N * (u64)sizeof(u16) + (u64)pad_u16 * (u64)sizeof(u16);
+	u64 section2_edges_u32_bytes  = (u64)g->L * (u64)sizeof(u32);
+	u64 section3_title_lens_bytes = (u64)g->N * (u64)sizeof(u16);
+	u64 section4_title_bytes	  = (u64)total_title_bytes;
+	u64 section5_v2_header_bytes  = (dump_format >= 2) ? (3u * (u64)sizeof(u32)) : 0u;
+	u64 section5_unredir_bytes	  = (u64)un_n * 3u * (u64)sizeof(u32);
+	u64 section5_redir_lens_bytes = (u64)rt_n + (u64)rt_pad;
+	u64 section5_redir_text_bytes = (u64)rt_bytes;
+	u64 section5_v2_total_bytes =
+		section5_v2_header_bytes + section5_unredir_bytes + section5_redir_lens_bytes + section5_redir_text_bytes;
+	u64 section6_link_flags_bytes = (u64)link_flags_bytes;
+	u64 known_total_bytes		  = header_bytes + section1_outdegree_bytes + section2_edges_u32_bytes +
+							section3_title_lens_bytes + section4_title_bytes + section5_v2_total_bytes +
+							section6_link_flags_bytes;
+
+	printf("[info] db section bytes:\n");
+	printf("[info]   header: %llu\n", (unsigned long long)header_bytes);
+	printf("[info]   section1_outdegree_u16_plus_pad: %llu\n", (unsigned long long)section1_outdegree_bytes);
+	printf("[info]   section2_edges_u32: %llu\n", (unsigned long long)section2_edges_u32_bytes);
+	printf("[info]   section3_title_lens_u16: %llu\n", (unsigned long long)section3_title_lens_bytes);
+	printf("[info]   section4_title_bytes: %llu\n", (unsigned long long)section4_title_bytes);
+	printf("[info]   section5_v2_total: %llu\n", (unsigned long long)section5_v2_total_bytes);
+	printf("[info]   section6_link_flags: %llu\n", (unsigned long long)section6_link_flags_bytes);
+	printf("[info]   known_total: %llu\n", (unsigned long long)known_total_bytes);
+	if (unknown_tail_bytes) {
+		printf("[info]   unknown_tail_bytes: %zu (ignored)\n", unknown_tail_bytes);
+	}
+	printf("[info] unredirect entries: %u\n", un_n);
+	printf("[info] redirect titles: %u\n", rt_n);
+	printf("[info] link flag bytes: %u\n", link_flags_bytes);
 
 	// ------------------------------------------------------------------------
 	// Allocate & copy runtime structures (free blob afterward)
@@ -421,6 +474,22 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 			off2 += len;
 		}
 		if (off2 != rt_bytes) db_fail("redir bytes sum mismatch");
+	}
+
+	g->edge_flags = NULL;
+	if (link_flags_bytes) {
+		g->edge_flags = (u8*)malloc((size_t)link_flags_bytes);
+		if (!g->edge_flags) db_fail("OOM edge_flags");
+		memcpy(g->edge_flags, link_flags, (size_t)link_flags_bytes);
+		for (u32 i = 0; i < link_flags_bytes; i++) {
+			u8 flags = g->edge_flags[i];
+			if (flags & LINK_FLAG_IS_RENAME) link_flags_rename++;
+			if (flags & LINK_FLAG_IS_INFOBOX) link_flags_infobox++;
+			if (flags & (u8) ~(LINK_FLAG_IS_RENAME | LINK_FLAG_IS_INFOBOX)) link_flags_unknown++;
+		}
+		printf("[info] link flags summary: rename=%llu infobox=%llu unknown_bitmask=%llu\n",
+			   (unsigned long long)link_flags_rename, (unsigned long long)link_flags_infobox,
+			   (unsigned long long)link_flags_unknown);
 	}
 
 	// Now we can free the decompressed blob (per your plan)
