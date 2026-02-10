@@ -381,21 +381,32 @@ STATIC bool graph_find_path_titles(const Graph* g, string start, string target, 
 		exit(2);
 	}
 
-	u32 s = graph_find_id(g, start);
-	if (s == UINT32_MAX) s = graph_find_id_case_insensitive_unique(g, start);
+	out->start_redir_idx = UINT32_MAX;
+	u32  start_redir_idx = UINT32_MAX;
+	bool start_ambiguous = false;
+	u32  s               = graph_find_id_fuzzy(g, start, &start_ambiguous, &start_redir_idx);
 	if (s == UINT32_MAX) {
-		printf("start page `%.*s` not in the database\n", STR_LEN(start), STR_PTR(start));
+		if (start_ambiguous) {
+			printf("start page `%.*s` is ambiguous; cannot disambiguate uniquely\n", STR_LEN(start), STR_PTR(start));
+		} else {
+			printf("start page `%.*s` not in the database\n", STR_LEN(start), STR_PTR(start));
+		}
 		return false;
 	}
-	u32 t = graph_find_id(g, target);
-	if (t == UINT32_MAX) t = graph_find_id_case_insensitive_unique(g, target);
+	bool target_ambiguous = false;
+	u32  t                = graph_find_id_fuzzy(g, target, &target_ambiguous, NULL);
 	if (t == UINT32_MAX) {
-		printf("target page `%.*s` not in the database\n", STR_LEN(target), STR_PTR(target));
+		if (target_ambiguous) {
+			printf("target page `%.*s` is ambiguous; cannot disambiguate uniquely\n", STR_LEN(target), STR_PTR(target));
+		} else {
+			printf("target page `%.*s` not in the database\n", STR_LEN(target), STR_PTR(target));
+		}
 		return false;
 	}
 
 	out->len = 0;
 	bool ok  = bikpaths_find_one(g, s, t, max_depth, out);
+	if (ok) out->start_redir_idx = start_redir_idx;
 
 #if VERIFY_RESULT_PATH
 	if (ok) verify_path_or_die(g, out);

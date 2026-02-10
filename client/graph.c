@@ -71,17 +71,123 @@ STATIC u32 graph_find_id(const Graph* g, string title) {
 
 // Linear scan fallback for case-insensitive exact match.
 // Returns the unique matching ID, or UINT32_MAX for none/ambiguous.
-STATIC u32 graph_find_id_case_insensitive_unique(const Graph* g, string title) {
+// ambiguous=true indicates multiple matches.
+STATIC u32 graph_find_id_case_insensitive_unique(const Graph* g, string title, bool* ambiguous) {
+	if (ambiguous) *ambiguous = false;
 	const char* key    = STR_PTR(title);
 	int         keylen = STR_LEN(title);
 	u32         found  = UINT32_MAX;
 	for (u32 i = 0; i < g->N; i++) {
 		string t = g->titles[i];
 		if (!string_eq_ascii_ci_raw(key, keylen, STR_PTR(t), STR_LEN(t))) continue;
-		if (found != UINT32_MAX) return UINT32_MAX;
+		if (found != UINT32_MAX) {
+			if (ambiguous) *ambiguous = true;
+			return UINT32_MAX;
+		}
 		found = i;
 	}
 	return found;
+}
+
+// Resolve a redirect title index into a canonical page ID.
+// Returns UINT32_MAX for none/ambiguous. ambiguous=true means conflicting destinations.
+STATIC u32 graph_find_redirect_dest_by_index_unique(const Graph* g, u32 redir_idx, bool* ambiguous) {
+	if (ambiguous) *ambiguous = false;
+	u32  found = UINT32_MAX;
+	bool have  = false;
+	for (u32 i = 0; i < g->nr_unredir; i++) {
+		UnredirEdge* e = &g->unredir[i];
+		if (e->redir_idx != redir_idx) continue;
+		if (!have) {
+			found = e->dest;
+			have  = true;
+			continue;
+		}
+		if (found != e->dest) {
+			if (ambiguous) *ambiguous = true;
+			return UINT32_MAX;
+		}
+	}
+	return have ? found : UINT32_MAX;
+}
+
+// Search redirect title table for an exact match (case-sensitive or ASCII case-insensitive).
+// Returns resolved canonical page ID when one or more matching redirect titles all map uniquely
+// to the same canonical destination. If multiple redirect titles match, the lexicographically
+// first title is retained via out_redir_idx. Returns UINT32_MAX for none/ambiguous.
+STATIC u32 graph_find_id_in_redirect_titles_unique(const Graph* g, string title, bool case_insensitive, bool* ambiguous,
+												   u32* out_redir_idx) {
+	if (ambiguous) *ambiguous = false;
+	if (out_redir_idx) *out_redir_idx = UINT32_MAX;
+
+	u32  matched_dest = UINT32_MAX;
+	u32  matched_idx  = UINT32_MAX;
+	bool have_match   = false;
+	for (u32 i = 0; i < g->nr_redir_titles; i++) {
+		string rt = g->redir_titles[i];
+		bool   ok = case_insensitive ? string_eq_ascii_ci_raw(STR_PTR(title), STR_LEN(title), STR_PTR(rt), STR_LEN(rt))
+									 : string_eq(title, rt);
+		if (!ok) continue;
+
+		bool dest_ambiguous = false;
+		u32  dest           = graph_find_redirect_dest_by_index_unique(g, i, &dest_ambiguous);
+		if (dest_ambiguous) {
+			if (ambiguous) *ambiguous = true;
+			return UINT32_MAX;
+		}
+		if (dest == UINT32_MAX) continue;
+
+		if (have_match && matched_dest != dest) {
+			if (ambiguous) *ambiguous = true;
+			return UINT32_MAX;
+		}
+		if (!have_match) {
+			have_match   = true;
+			matched_dest = dest;
+			matched_idx  = i;
+		}
+	}
+	if (!have_match) return UINT32_MAX;
+	if (out_redir_idx) *out_redir_idx = matched_idx;
+	return matched_dest;
+}
+
+// Resolution order:
+// 1) exact canonical title
+// 2) case-insensitive canonical title (must be unique)
+// 3) exact redirect title (must be unique and map uniquely)
+// 4) case-insensitive redirect title (must be unique and map uniquely)
+//
+// Redirect fallback is only attempted when canonical case-insensitive lookup found zero matches.
+// ambiguous=true indicates a disambiguation failure; caller should stop fallback attempts.
+STATIC u32 graph_find_id_fuzzy(const Graph* g, string title, bool* ambiguous, u32* out_redir_idx) {
+	if (ambiguous) *ambiguous = false;
+	if (out_redir_idx) *out_redir_idx = UINT32_MAX;
+
+	u32 id = graph_find_id(g, title);
+	if (id != UINT32_MAX) return id;
+
+	bool ci_ambiguous = false;
+	id                = graph_find_id_case_insensitive_unique(g, title, &ci_ambiguous);
+	if (id != UINT32_MAX) return id;
+	if (ci_ambiguous) {
+		if (ambiguous) *ambiguous = true;
+		return UINT32_MAX;
+	}
+
+	bool redir_exact_ambiguous = false;
+	id = graph_find_id_in_redirect_titles_unique(g, title, false, &redir_exact_ambiguous, out_redir_idx);
+	if (id != UINT32_MAX) return id;
+	if (redir_exact_ambiguous) {
+		if (ambiguous) *ambiguous = true;
+		return UINT32_MAX;
+	}
+
+	bool redir_ci_ambiguous = false;
+	id = graph_find_id_in_redirect_titles_unique(g, title, true, &redir_ci_ambiguous, out_redir_idx);
+	if (id != UINT32_MAX) return id;
+	if (redir_ci_ambiguous && ambiguous) *ambiguous = true;
+	return UINT32_MAX;
 }
 
 // Outgoing adjacency membership check using binary search.

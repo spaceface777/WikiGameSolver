@@ -80,7 +80,7 @@ val search(std::string start_, std::string target_) {
 
 	val arr = val::array();
 
-	PathIDs path_ids = {.len = 0, .ids = {0}};
+	PathIDs path_ids = {.len = 0, .ids = {0}, .start_redir_idx = UINT32_MAX};
 	bool    ok       = graph_find_path_titles(&G, start, target, MAX_DEPTH, &path_ids);
 
 	if (!ok || path_ids.len == 0) {
@@ -88,11 +88,19 @@ val search(std::string start_, std::string target_) {
 		return arr;
 	}
 
-	// First entry: the start title
+	// First entry: the start title (with redirect annotation when input resolved via redirect title)
 	{
-		u32    id    = path_ids.ids[0];
-		string title = G.titles[id];
-		arr.call<void>("push", std::string(STR_PTR(title), STR_LEN(title)));
+		u32 id = path_ids.ids[0];
+		if (path_ids.start_redir_idx < G.nr_redir_titles) {
+			string      redir_title = G.redir_titles[path_ids.start_redir_idx];
+			string      dest_title  = G.titles[id];
+			std::string formatted   = std::string(STR_PTR(redir_title), STR_LEN(redir_title)) + " (redirects to " +
+									std::string(STR_PTR(dest_title), STR_LEN(dest_title)) + ")";
+			arr.call<void>("push", formatted);
+		} else {
+			string title = G.titles[id];
+			arr.call<void>("push", std::string(STR_PTR(title), STR_LEN(title)));
+		}
 	}
 
 	// Subsequent entries: what link to click (with redirect annotation if applicable)

@@ -97,8 +97,9 @@ typedef struct Graph {
 } Graph;
 
 typedef struct PathIDs {
-	u32 len;           // number of nodes in path
-	u32 ids[PATH_CAP]; // node IDs
+	u32 len;             // number of nodes in path
+	u32 ids[PATH_CAP];   // node IDs
+	u32 start_redir_idx; // UINT32_MAX when start was resolved as canonical title
 } PathIDs;
 
 // ----------------------------------------------------------------------------

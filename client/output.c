@@ -28,7 +28,12 @@ STATIC void graph_print_path(const Graph* g, const PathIDs* path) {
 
 	// First line shows the start title
 	u32 start = path->ids[0];
-	println(SLIT(" -> "), g->titles[start]);
+	if (path->start_redir_idx < g->nr_redir_titles) {
+		println(SLIT(" -> "), g->redir_titles[path->start_redir_idx], SLIT(" (redirects to "), g->titles[start],
+				SLIT(")"));
+	} else {
+		println(SLIT(" -> "), g->titles[start]);
+	}
 
 	// Subsequent lines show what to click (dest title, or redirect title annotation)
 	for (u32 i = 1; i < path->len; i++) {
@@ -54,8 +59,18 @@ STATIC void graph_write_path_fd(const Graph* g, int fd, const PathIDs* path) {
 
 	// First line: start title
 	{
-		string s = g->titles[path->ids[0]];
-		write(fd, STR_PTR(s), STR_LEN(s));
+		u32 start = path->ids[0];
+		if (path->start_redir_idx < g->nr_redir_titles) {
+			string rt = g->redir_titles[path->start_redir_idx];
+			write(fd, STR_PTR(rt), STR_LEN(rt));
+			write(fd, " (redirects to ", (int)sizeof(" (redirects to ") - 1);
+			string bt = g->titles[start];
+			write(fd, STR_PTR(bt), STR_LEN(bt));
+			write(fd, ")", 1);
+		} else {
+			string s = g->titles[start];
+			write(fd, STR_PTR(s), STR_LEN(s));
+		}
 		write(fd, "\n", 1);
 	}
 
