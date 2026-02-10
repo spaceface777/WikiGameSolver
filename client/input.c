@@ -1,6 +1,6 @@
-#ifdef ENABLE_PRETTY_INPUT
-
 #include "input.h"
+
+#ifdef ENABLE_PRETTY_INPUT
 
 typedef struct Range {
 	int start, end;
