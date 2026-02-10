@@ -4,17 +4,18 @@ typedef struct ThreadData {
 	const Graph* g;
 	string       start;
 	string       target;
+	u32          k_paths;
 	int          connfd;
 
 	bool    found;
-	PathIDs path;
+	PathSet paths;
 } ThreadData;
 
 STATIC _Atomic int nr_jobs = 0;
 
 STATIC void* worker_main(void* ptr) {
 	ThreadData* d = (ThreadData*)ptr;
-	d->found      = graph_find_path_titles(d->g, d->start, d->target, (u8)MAX_DEPTH, &d->path);
+	d->found      = graph_find_path_titles_k(d->g, d->start, d->target, (u8)MAX_DEPTH, d->k_paths, &d->paths);
 	return NULL;
 }
 
@@ -27,7 +28,7 @@ STATIC void worker_send_and_free(void* ptr) {
 
 	// Always clean up, even on early exits.
 	if (d->connfd != -1) {
-		graph_write_path_fd(d->g, d->connfd, d->found ? &d->path : NULL);
+		graph_write_pathset_fd(d->g, d->connfd, d->found ? &d->paths : NULL);
 		close(d->connfd);
 		d->connfd = -1;
 	}
@@ -126,18 +127,38 @@ STATIC void server_listen(const Graph* g, int port) {
 		buf += slen;
 		nread -= slen;
 
+		u32 req_k = 1;
+		while (nread > 0 && (*buf == ' ' || *buf == '\n' || *buf == '\r' || *buf == '\t')) {
+			buf++;
+			nread--;
+		}
+		if (nread > 0) {
+			int kval = 0;
+			if (sscanf(buf, "%d%n", &kval, &t) != 1) goto err;
+			if (kval < 1 || kval > (int)SEARCH_MAX_K) goto err;
+			req_k = (u32)kval;
+			buf += t;
+			nread -= t;
+			while (nread > 0 && (*buf == ' ' || *buf == '\n' || *buf == '\r' || *buf == '\t')) {
+				buf++;
+				nread--;
+			}
+			if (nread != 0) goto err;
+		}
+
 		ThreadData td = {
-			.g      = g,
-			.start  = start,
-			.target = target,
-			.connfd = connfd,
-			.found  = false,
-			.path   = {0},
+			.g       = g,
+			.start   = start,
+			.target  = target,
+			.k_paths = req_k,
+			.connfd  = connfd,
+			.found   = false,
+			.paths   = {0},
 		};
 
 		thpool_add_work(pool, (void*)worker_send_and_free, memdup(&td, sizeof(td)));
-		printf("launched job #%d:\t%.*s -> %.*s\n", ++nr_jobs, STR_LEN(start), STR_PTR(start), STR_LEN(target),
-			   STR_PTR(target));
+		printf("launched job #%d:\t%.*s -> %.*s (k=%u)\n", ++nr_jobs, STR_LEN(start), STR_PTR(start), STR_LEN(target),
+			   STR_PTR(target), (unsigned)req_k);
 		continue;
 
 	err:

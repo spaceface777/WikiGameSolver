@@ -96,8 +96,7 @@ STATIC char* lzma_decompress_alloc(const char* in, long in_len, long* out_len) {
 
 STATIC void validate_graph_fully(Graph* g) {
 #if !defined(DB_NO_VALIDATE)
-	if (!g->titles || !g->out_offsets || !g->out_edges24 || !g->in_offsets || !g->in_edges24)
-		db_fail("internal graph not initialized");
+	if (!g->titles || !g->out_offsets || !g->out_edges24) db_fail("internal graph not initialized");
 
 	if (g->N == 0) db_fail("N==0");
 	if (g->N > 0xFFFFFFu) db_fail("N exceeds 24-bit id range");
@@ -117,12 +116,6 @@ STATIC void validate_graph_fully(Graph* g) {
 	for (u32 i = 0; i < g->N; i++) {
 		if (g->out_offsets[i] > g->out_offsets[i + 1]) db_fail("out_offsets not monotonic");
 	}
-	if (g->in_offsets[0] != 0) db_fail("in_offsets[0]!=0");
-	if (g->in_offsets[g->N] != g->L) db_fail("in_offsets[N]!=L");
-	for (u32 i = 0; i < g->N; i++) {
-		if (g->in_offsets[i] > g->in_offsets[i + 1]) db_fail("in_offsets not monotonic");
-	}
-
 	// Validate adjacency lists are sorted and in range (decode u24 once at startup).
 	// This is O(L) and allowed at startup.
 	for (u32 u = 0; u < g->N; u++) {
@@ -140,18 +133,6 @@ STATIC void validate_graph_fully(Graph* g) {
 				if (v < prev) db_fail("out adjacency not sorted");
 				prev = v;
 			}
-		}
-	}
-
-	// Incoming edges in range (decode once).
-	for (u32 v = 0; v < g->N; v++) {
-		u32 beg = g->in_offsets[v];
-		u32 end = g->in_offsets[v + 1];
-		if (beg > end || end > g->L) db_fail("in_offsets bounds");
-		const u8* p = u24_cptr(g->in_edges24, beg);
-		for (u32 idx = beg; idx < end; idx++, p += 3) {
-			u32 src = u24_load(p);
-			if (src >= g->N) db_fail("in edge src out of range");
 		}
 	}
 
@@ -380,16 +361,16 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 	if (!g->out_edges24) db_fail("OOM out_edges24");
 	memset(g->out_edges24 + (size_t)g->L * 3u, 0, 4); // padding
 
-	// In offsets counts, then prefix sum
-	g->in_offsets = (u32*)calloc(((size_t)g->N + 1u), sizeof(u32));
-	if (!g->in_offsets) db_fail("OOM in_offsets");
+	g->max_out_degree = 0;
 
 	// Pack outgoing edges + indegree counts + validate adjacency sorted/range
 	for (u32 u = 0; u < g->N; u++) {
 		u32  beg      = g->out_offsets[u];
 		u32  end2     = g->out_offsets[u + 1];
+		u32  out_deg  = end2 - beg;
 		u32  prev     = 0;
 		bool has_prev = false;
+		if (out_deg > g->max_out_degree) g->max_out_degree = out_deg;
 
 		for (u32 idx = beg; idx < end2; idx++) {
 			u32 v = edges_u32[idx];
@@ -400,37 +381,8 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 			prev     = v;
 
 			u24_store(u24_ptr(g->out_edges24, idx), v);
-			g->in_offsets[v + 1]++; // indegree count
 		}
 	}
-
-	// prefix sum indegree counts -> offsets
-	for (u32 i = 1; i <= g->N; i++) {
-		g->in_offsets[i] += g->in_offsets[i - 1];
-	}
-	if (g->in_offsets[g->N] != g->L) db_fail("in_offsets sum != L");
-
-	// In edges (u24)
-	size_t in_bytes = (size_t)g->L * 3u + 4u;
-	g->in_edges24   = (u8*)malloc(in_bytes);
-	if (!g->in_edges24) db_fail("OOM in_edges24");
-	memset(g->in_edges24 + (size_t)g->L * 3u, 0, 4); // padding
-
-	u32* cur = (u32*)malloc(((size_t)g->N + 1u) * sizeof(u32));
-	if (!cur) db_fail("OOM cur");
-	memcpy(cur, g->in_offsets, ((size_t)g->N + 1u) * sizeof(u32));
-
-	// Fill incoming edges by reusing edges_u32 (still in blob)
-	for (u32 src = 0; src < g->N; src++) {
-		u32 beg  = g->out_offsets[src];
-		u32 end2 = g->out_offsets[src + 1];
-		for (u32 idx = beg; idx < end2; idx++) {
-			u32 dst = edges_u32[idx];
-			u32 pos = cur[dst]++;
-			u24_store(u24_ptr(g->in_edges24, pos), src);
-		}
-	}
-	free(cur);
 
 	// v2: unredir + redirect titles copied out
 	g->nr_unredir = un_n;
@@ -499,6 +451,7 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len) {
 
 	// Full validation after conversion and copies
 	validate_graph_fully(g);
+	search_prepare_graph(g);
 
 	log_ts("validated db file");
 }

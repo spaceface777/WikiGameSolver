@@ -31,9 +31,17 @@
 // ----------------------------------------------------------------------------
 // Configuration
 // ----------------------------------------------------------------------------
-#define MAX_DEPTH           200
-#define PATH_CAP            256 // hard cap for internal arrays; must be > max_depth and <= 255+1
 #define DUMP_FORMAT_VERSION 2
+
+#define MAX_DEPTH    200
+#define PATH_CAP     256 // hard cap for internal arrays; must be > max_depth and <= 255+1
+#define SEARCH_MAX_K 64
+// Dynamic search buffers start small and grow by 1.5x as needed.
+#define ENUM_STATE_INIT_CAP      1000u     // bench p90(enum_states_used)=183
+#define SIDETRACK_STATE_INIT_CAP 1000u     // fallback-only; grow x1.5 on demand
+#define DAG_EDGE_INIT_CAP        10000000u // bench p90(dag_edges_used)=5,002,769
+#define SIDETRACK_NODE_INIT_CAP  10000u    // fallback-only; keep small at startup
+#define BENCH_K32_VALUE          32u
 
 // Toggle expensive validation of unredir edges (binary search in adjacency).
 // Kept ON by default per your "validate absolutely everything" requirement.
@@ -79,9 +87,7 @@ typedef struct Graph {
 	u32* out_offsets; // N+1
 	u8*  out_edges24; // 3*L + 4 padding
 
-	// Incoming CSR
-	u32* in_offsets; // N+1
-	u8*  in_edges24; // 3*L + 4 padding
+	u32 max_out_degree;
 
 	string* redir_titles;
 	u32     nr_redir_titles;
@@ -102,6 +108,11 @@ typedef struct PathIDs {
 	u32 start_redir_idx; // UINT32_MAX when start was resolved as canonical title
 } PathIDs;
 
+typedef struct PathSet {
+	u32     count; // number of returned paths
+	PathIDs paths[SEARCH_MAX_K];
+} PathSet;
+
 // ----------------------------------------------------------------------------
 // Shared helpers (declared here, defined in included .c files)
 // ----------------------------------------------------------------------------
@@ -109,12 +120,14 @@ STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len);
 STATIC void graph_load_from_file(Graph* g, const char* path);
 STATIC u32  graph_find_id(const Graph* g, string title); // returns UINT32_MAX if not found
 STATIC void graph_print_path(const Graph* g, const PathIDs* path);
-STATIC void graph_write_path_fd(const Graph* g, int fd, const PathIDs* path);
+STATIC void graph_write_pathset_fd(const Graph* g, int fd, const PathSet* set);
 STATIC bool graph_find_path_titles(const Graph* g, string start, string target, u8 max_depth, PathIDs* out);
+STATIC bool graph_find_path_titles_k(const Graph* g, string start, string target, u8 max_depth, u32 K, PathSet* out);
 STATIC int  unredir_lookup(const Graph* g, u32 src, u32 dest);
 STATIC void pagerank_build(Graph* g, int iters, double damp, double eps);
-STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth);
+STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth, u32 k_paths);
 STATIC void diff_run(const char* old_path, const char* new_path, int topk);
+STATIC void search_prepare_graph(const Graph* g);
 
 #if !defined(CLIENT_HEADER_ONLY)
 
@@ -158,6 +171,7 @@ STATIC void usage(const char* prog) {
 			"  %s [options]                  Interactive mode\n"
 			"  %s [options] START TARGET     Single query\n"
 			"  %s [options] --bench N       Benchmark mode\n"
+			"  %s [options] --bench-k32 --bench N  Benchmark with K=32 shortest-hop paths\n"
 			"  %s --diff OLD_DB NEW_DB      Snapshot diff mode\n"
 #ifdef ENABLE_SERVER
 			"  %s [options] --listen PORT    Server mode\n"
@@ -166,6 +180,9 @@ STATIC void usage(const char* prog) {
 			"Options:\n"
 			"  -d, --db PATH           Database file to load (default: db.bin or db.unc)\n"
 			"  -m, --max-depth N       Max search depth (1..254). Default: %d\n"
+			"  -k, --k-paths N         Return up to N shortest-hop paths (1..%d). Default: 1\n"
+			"      --bench-k N         Bench only: request up to N paths (1..%d). Default: 1\n"
+			"      --bench-k32         Bench only: shorthand for --bench-k %u\n"
 #ifdef ENABLE_SERVER
 			"  -l, --listen PORT        Listen on PORT (1..65535)\n"
 #endif
@@ -176,11 +193,11 @@ STATIC void usage(const char* prog) {
 			"\n"
 			"Notes:\n"
 			"  - Options may be given as --opt=value or --opt value.\n",
-			prog, prog, prog, prog,
+			prog, prog, prog, prog, prog,
 #ifdef ENABLE_SERVER
 			prog,
 #endif
-			(int)MAX_DEPTH);
+			(int)MAX_DEPTH, (int)SEARCH_MAX_K, (int)SEARCH_MAX_K, (unsigned)BENCH_K32_VALUE);
 }
 
 STATIC bool parse_u32(const char* s, u32* out) {
@@ -217,7 +234,9 @@ int main(int argc, char** argv) {
 
 	const char* db_path       = default_db;
 	u32         max_depth_u32 = (u32)MAX_DEPTH;
+	u32         k_paths       = 1;
 	bool        bench_mode    = false;
+	u32         bench_k_paths = 1;
 	u32         bench_iters   = 0;
 	bool        diff_mode     = false;
 	const char* diff_old_path = NULL;
@@ -264,9 +283,30 @@ int main(int argc, char** argv) {
 				return 0;
 			}
 
-			if (strcmp(a, "-b") == 0 || strncmp(a, "--bench", 7) == 0) {
+			if (strcmp(a, "--bench-k32") == 0) {
+				if (BENCH_K32_VALUE > SEARCH_MAX_K) {
+					fprintf(stderr, "error: --bench-k32 requires SEARCH_MAX_K >= %u\n", (unsigned)BENCH_K32_VALUE);
+					return 2;
+				}
+				bench_k_paths = BENCH_K32_VALUE;
+				continue;
+			}
+
+			if (strncmp(a, "--bench-k", 9) == 0) {
+				const char* eq  = a + 9;
+				const char* v   = take_opt_value(&i, argc, argv, "--bench-k", eq);
+				u32         tmp = 0;
+				if (!parse_u32(v, &tmp) || tmp < 1 || tmp > SEARCH_MAX_K) {
+					fprintf(stderr, "error: invalid --bench-k '%s' (must be 1..%u)\n", v, (unsigned)SEARCH_MAX_K);
+					return 2;
+				}
+				bench_k_paths = tmp;
+				continue;
+			}
+
+			if (strcmp(a, "-b") == 0 || strcmp(a, "--bench") == 0 || strncmp(a, "--bench=", 8) == 0) {
 				const char* eq = NULL;
-				if (strncmp(a, "--bench", 7) == 0) eq = a + 7;
+				if (strncmp(a, "--bench=", 8) == 0) eq = a + 7;
 				const char* v   = take_opt_value(&i, argc, argv, "--bench", eq);
 				u32         tmp = 0;
 				if (!parse_u32(v, &tmp) || tmp == 0) {
@@ -316,6 +356,20 @@ int main(int argc, char** argv) {
 				continue;
 			}
 
+			// --k-paths or --k-paths=N
+			if (strcmp(a, "-k") == 0 || strncmp(a, "--k-paths", 9) == 0) {
+				const char* eq = NULL;
+				if (strncmp(a, "--k-paths", 9) == 0) eq = a + 9;
+				const char* v   = take_opt_value(&i, argc, argv, "--k-paths", eq);
+				u32         tmp = 0;
+				if (!parse_u32(v, &tmp) || tmp < 1 || tmp > SEARCH_MAX_K) {
+					fprintf(stderr, "error: invalid --k-paths '%s' (must be 1..%u)\n", v, (unsigned)SEARCH_MAX_K);
+					return 2;
+				}
+				k_paths = tmp;
+				continue;
+			}
+
 #ifdef ENABLE_SERVER
 			// --listen or --listen=PORT
 			if (strcmp(a, "-l") == 0 || strncmp(a, "--listen", 8) == 0) {
@@ -358,6 +412,10 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "error: --diff cannot be combined with --bench\n");
 		return 2;
 	}
+	if (!bench_mode && bench_k_paths != 1) {
+		fprintf(stderr, "error: --bench-k/--bench-k32 requires --bench\n");
+		return 2;
+	}
 
 	if (diff_mode) {
 		if (pos_n != 0) {
@@ -393,7 +451,7 @@ int main(int argc, char** argv) {
 			usage(argv[0]);
 			return 2;
 		}
-		bench_run(&G, bench_iters, (u8)max_depth_u32);
+		bench_run(&G, bench_iters, (u8)max_depth_u32, bench_k_paths);
 		return 0;
 	}
 
@@ -402,10 +460,23 @@ int main(int argc, char** argv) {
 		string start  = string_clone(STR((char*)pos[0], (int)strlen(pos[0])));
 		string target = string_clone(STR((char*)pos[1], (int)strlen(pos[1])));
 
-		PathIDs path_ids = {0};
-		bool    ok       = graph_find_path_titles(&G, start, target, (u8)max_depth_u32, &path_ids);
-		if (ok) graph_print_path(&G, &path_ids);
-		else println(SLIT("No path found"));
+		bool ok = false;
+		if (k_paths == 1) {
+			PathIDs path_ids = {0};
+			ok               = graph_find_path_titles(&G, start, target, (u8)max_depth_u32, &path_ids);
+			if (ok) graph_print_path(&G, &path_ids);
+		} else {
+			PathSet set = {0};
+			ok          = graph_find_path_titles_k(&G, start, target, (u8)max_depth_u32, k_paths, &set);
+			if (ok) {
+				printf("\n\nReturned %u path(s):\n", (unsigned)set.count);
+				for (u32 i = 0; i < set.count; i++) {
+					printf("\nPath #%u:\n", (unsigned)(i + 1));
+					graph_print_path(&G, &set.paths[i]);
+				}
+			}
+		}
+		if (!ok) println(SLIT("No path found"));
 
 		string_free(&start);
 		string_free(&target);
@@ -435,11 +506,25 @@ int main(int argc, char** argv) {
 
 		Timer t = timer_begin("search");
 
-		PathIDs path_ids = {0};
-		bool    ok       = graph_find_path_titles(&G, start, target, (u8)max_depth_u32, &path_ids);
-
-		if (ok) graph_print_path(&G, &path_ids);
-		else println(SLIT("\n\nNo path found."));
+		bool ok = false;
+		if (k_paths == 1) {
+			PathIDs path_ids = {0};
+			ok               = graph_find_path_titles(&G, start, target, (u8)max_depth_u32, &path_ids);
+			if (ok) graph_print_path(&G, &path_ids);
+			else println(SLIT("\n\nNo path found."));
+		} else {
+			PathSet set = {0};
+			ok          = graph_find_path_titles_k(&G, start, target, (u8)max_depth_u32, k_paths, &set);
+			if (ok) {
+				printf("\n\nReturned %u path(s):\n", (unsigned)set.count);
+				for (u32 i = 0; i < set.count; i++) {
+					printf("\nPath #%u:\n", (unsigned)(i + 1));
+					graph_print_path(&G, &set.paths[i]);
+				}
+			} else {
+				println(SLIT("\n\nNo path found."));
+			}
+		}
 
 		println("");
 		timer_end(t);
