@@ -20,6 +20,36 @@ MAYBE_THREAD_LOCAL STATIC u8*  mp_cost_done = NULL;
 MAYBE_THREAD_LOCAL STATIC u32* mp_cost_best = NULL;
 MAYBE_THREAD_LOCAL STATIC u32* mp_cost_next = NULL;
 
+typedef struct SearchPerf {
+	u64 lookup_ns;
+	u64 sp_bfs_ns;
+	u64 sp_reset_ns;
+	u64 mp_fwd_bfs_ns;
+	u64 mp_rev_bfs_ns;
+	u64 memo_reset_ns;
+	u64 zero_dfs_ns;
+	u64 cost_dfs_ns;
+	u64 path_build_ns;
+	u64 cleanup_ns;
+	u64 solver_ns;
+	u64 verify_ns;
+	u64 total_ns;
+
+	u32 vis_sp;
+	u32 vis_fwd;
+	u32 vis_rev;
+	u32 path_len;
+	u8  shortest_dist;
+	u8  strategy; // 0=none, 1=zero-special, 2=min-cost fallback
+	bool found;
+} SearchPerf;
+
+MAYBE_THREAD_LOCAL STATIC SearchPerf g_search_perf_last = {0};
+
+STATIC const SearchPerf* search_perf_get_last(void) {
+	return &g_search_perf_last;
+}
+
 STATIC void sp_init(u32 N) {
 	if (!sp_ds) {
 		sp_ds = (u8*)malloc((size_t)N);
@@ -184,7 +214,12 @@ STATIC u32 mp_rbfs_suffix(const Graph* g, u32 t, u8 suffix) {
 		for (u32 idx = beg; idx < end; idx++, p += 3) {
 			u32 pred = u24_load(p);
 			if (mp_db[pred] != 0xFF) continue;
-			mp_db[pred]   = (u8)(dv + 1);
+			u8 df = mp_df[pred];
+			if (df == 0xFF) continue;
+			u8 nd = (u8)(dv + 1);
+			// Keep only nodes that can lie on shortest s->t paths.
+			if ((u16)df + (u16)nd != (u16)suffix) continue;
+			mp_db[pred] = nd;
 			mp_qb[tail++] = pred;
 		}
 	}
@@ -299,7 +334,7 @@ STATIC bool mp_build_path_from_next(u32 s, u32 t, u8 D, const u32* next_arr, Pat
 	return true;
 }
 
-STATIC bool bikpaths_find_one(const Graph* g, u32 s, u32 t, u8 max_depth, PathIDs* out) {
+STATIC bool bikpaths_find_one(const Graph* g, u32 s, u32 t, u8 max_depth, PathIDs* out, SearchPerf* perf) {
 	assert(g && g->validated);
 	assert(g->N <= 0xFFFFFFu);
 	assert(PATH_CAP <= 256);
@@ -308,6 +343,12 @@ STATIC bool bikpaths_find_one(const Graph* g, u32 s, u32 t, u8 max_depth, PathID
 	if (s == t) {
 		out->len    = 1;
 		out->ids[0] = s;
+		if (perf) {
+			perf->found         = true;
+			perf->path_len      = 1;
+			perf->shortest_dist = 0;
+			perf->strategy      = 1;
+		}
 		return true;
 	}
 
@@ -316,39 +357,80 @@ STATIC bool bikpaths_find_one(const Graph* g, u32 s, u32 t, u8 max_depth, PathID
 	mp_init(N);
 
 	// 1) provable shortest distance D (bounded by max_depth)
+	u64 phase_t0 = get_monotonic_time();
 	u32 vis_s = 0;
 	u8  D     = sp_bfs_distance(g, s, t, max_depth, &vis_s);
+	if (perf) {
+		perf->sp_bfs_ns += (get_monotonic_time() - phase_t0);
+		perf->vis_sp        = vis_s;
+		perf->shortest_dist = D;
+	}
+	phase_t0 = get_monotonic_time();
 	sp_reset(vis_s);
+	if (perf) perf->sp_reset_ns += (get_monotonic_time() - phase_t0);
 	if (D == 0xFF) return false;
 
 	// 2) build complete shortest-path layering from both sides
+	phase_t0  = get_monotonic_time();
 	u32 vis_f = mp_bfs_prefix(g, s, D);
+	if (perf) {
+		perf->mp_fwd_bfs_ns += (get_monotonic_time() - phase_t0);
+		perf->vis_fwd = vis_f;
+	}
+	phase_t0  = get_monotonic_time();
 	u32 vis_b = mp_rbfs_suffix(g, t, D);
+	if (perf) {
+		perf->mp_rev_bfs_ns += (get_monotonic_time() - phase_t0);
+		perf->vis_rev = vis_b;
+	}
 
 	// Reset DP memo states only for touched forward nodes.
+	phase_t0 = get_monotonic_time();
 	for (u32 i = 0; i < vis_f; i++) {
 		u32 v           = mp_qf[i];
 		mp_zero_memo[v] = 0;
-		mp_zero_next[v] = UINT32_MAX;
 		mp_cost_done[v] = 0;
-		mp_cost_best[v] = MP_INF_COST;
-		mp_cost_next[v] = UINT32_MAX;
 	}
+	if (perf) perf->memo_reset_ns += (get_monotonic_time() - phase_t0);
 
 	// 3) First choice: shortest path that uses only non-special edges.
 	bool found = false;
-	if (mp_shortest_zero_dfs(g, s, t, D)) {
+	phase_t0  = get_monotonic_time();
+	bool zero = mp_shortest_zero_dfs(g, s, t, D);
+	if (perf) perf->zero_dfs_ns += (get_monotonic_time() - phase_t0);
+	if (zero) {
+		phase_t0 = get_monotonic_time();
 		found = mp_build_path_from_next(s, t, D, mp_zero_next, out);
+		if (perf) {
+			perf->path_build_ns += (get_monotonic_time() - phase_t0);
+			if (found) perf->strategy = 1;
+		}
 	}
 
 	// 4) Fallback: among ALL shortest paths, pick minimum special_cost.
 	if (!found) {
+		phase_t0 = get_monotonic_time();
 		u32 best_cost = mp_shortest_min_cost_dfs(g, s, t, D);
-		if (best_cost != MP_INF_COST) found = mp_build_path_from_next(s, t, D, mp_cost_next, out);
+		if (perf) perf->cost_dfs_ns += (get_monotonic_time() - phase_t0);
+		if (best_cost != MP_INF_COST) {
+			phase_t0 = get_monotonic_time();
+			found    = mp_build_path_from_next(s, t, D, mp_cost_next, out);
+			if (perf) {
+				perf->path_build_ns += (get_monotonic_time() - phase_t0);
+				if (found) perf->strategy = 2;
+			}
+		}
 	}
 
+	phase_t0 = get_monotonic_time();
 	mp_reset_db(vis_b);
 	mp_reset_df(vis_f);
+	if (perf) perf->cleanup_ns += (get_monotonic_time() - phase_t0);
+
+	if (perf) {
+		perf->found    = found;
+		perf->path_len = found ? out->len : 0;
+	}
 
 	return found;
 }
@@ -381,35 +463,55 @@ STATIC bool graph_find_path_titles(const Graph* g, string start, string target, 
 		exit(2);
 	}
 
+	SearchPerf* perf = &g_search_perf_last;
+	memset(perf, 0, sizeof(*perf));
+	perf->shortest_dist = 0xFF;
+	u64 total_t0 = get_monotonic_time();
+
 	out->start_redir_idx = UINT32_MAX;
 	u32  start_redir_idx = UINT32_MAX;
 	bool start_ambiguous = false;
+	u64  lookup_t0       = get_monotonic_time();
 	u32  s               = graph_find_id_fuzzy(g, start, &start_ambiguous, &start_redir_idx);
+	perf->lookup_ns += (get_monotonic_time() - lookup_t0);
 	if (s == UINT32_MAX) {
 		if (start_ambiguous) {
 			printf("start page `%.*s` is ambiguous; cannot disambiguate uniquely\n", STR_LEN(start), STR_PTR(start));
 		} else {
 			printf("start page `%.*s` not in the database\n", STR_LEN(start), STR_PTR(start));
 		}
+		perf->total_ns = (get_monotonic_time() - total_t0);
 		return false;
 	}
 	bool target_ambiguous = false;
-	u32  t                = graph_find_id_fuzzy(g, target, &target_ambiguous, NULL);
+	lookup_t0             = get_monotonic_time();
+	u32 t                 = graph_find_id_fuzzy(g, target, &target_ambiguous, NULL);
+	perf->lookup_ns += (get_monotonic_time() - lookup_t0);
 	if (t == UINT32_MAX) {
 		if (target_ambiguous) {
 			printf("target page `%.*s` is ambiguous; cannot disambiguate uniquely\n", STR_LEN(target), STR_PTR(target));
 		} else {
 			printf("target page `%.*s` not in the database\n", STR_LEN(target), STR_PTR(target));
 		}
+		perf->total_ns = (get_monotonic_time() - total_t0);
 		return false;
 	}
 
 	out->len = 0;
-	bool ok  = bikpaths_find_one(g, s, t, max_depth, out);
+	u64 solver_t0 = get_monotonic_time();
+	bool ok       = bikpaths_find_one(g, s, t, max_depth, out, perf);
+	perf->solver_ns += (get_monotonic_time() - solver_t0);
 	if (ok) out->start_redir_idx = start_redir_idx;
 
 #if VERIFY_RESULT_PATH
-	if (ok) verify_path_or_die(g, out);
+	if (ok) {
+		u64 verify_t0 = get_monotonic_time();
+		verify_path_or_die(g, out);
+		perf->verify_ns += (get_monotonic_time() - verify_t0);
+	}
 #endif
+	perf->found    = ok;
+	perf->path_len = ok ? out->len : 0;
+	perf->total_ns = (get_monotonic_time() - total_t0);
 	return ok;
 }

@@ -31,7 +31,7 @@
 // ----------------------------------------------------------------------------
 // Configuration
 // ----------------------------------------------------------------------------
-#define MAX_DEPTH           100
+#define MAX_DEPTH           200
 #define PATH_CAP            256 // hard cap for internal arrays; must be > max_depth and <= 255+1
 #define DUMP_FORMAT_VERSION 2
 
