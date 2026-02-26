@@ -132,11 +132,18 @@ STATIC void pagerank_build(Graph* g, int iters, double damp, double eps, double 
 	// normalized so they still form a proper probability distribution for the
 	// sampler.
 	double       sum   = 0.0;
-	for (u32 i = 0; i < N; i++) {
-		double biased = pow(r[i], alpha);
-		if (biased == 0.0) biased = DBL_MIN;
-		r[i] = biased;
-		sum += biased;
+
+	if (alpha == 1.0f) {
+		for (u32 i = 0; i < N; i++) {
+			sum += r[i];
+		}
+	} else {
+		for (u32 i = 0; i < N; i++) {
+			double biased = pow(r[i], alpha);
+			if (biased == 0.0) biased = DBL_MIN;
+			r[i] = biased;
+			sum += biased;
+		}
 	}
 	if (sum > 0.0) {
 		double inv = 1.0 / sum;
