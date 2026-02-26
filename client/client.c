@@ -128,7 +128,7 @@ STATIC void graph_write_pathset_fd(const Graph* g, int fd, const PathSet* set);
 STATIC bool graph_find_path_titles(const Graph* g, string start, string target, u8 max_depth, PathIDs* out);
 STATIC bool graph_find_path_titles_k(const Graph* g, string start, string target, u8 max_depth, u32 K, PathSet* out);
 STATIC int  unredir_lookup(const Graph* g, u32 src, u32 dest);
-STATIC void pagerank_build(Graph* g, int iters, double damp, double eps);
+STATIC void pagerank_build(Graph* g, int iters, double damp, double eps, double alpha);
 STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth, u32 k_paths);
 STATIC void diff_run(const char* old_path, const char* new_path, int topk);
 STATIC void search_prepare_graph(const Graph* g);

@@ -77,8 +77,8 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
 	graph_load_from_file(&new_g, new_path);
 
 	// Build PageRank once per graph for relevance ordering.
-	pagerank_build(&old_g, 20, 0.85, 0.0);
-	pagerank_build(&new_g, 20, 0.85, 0.0);
+	pagerank_build(&old_g, 20, 0.85, 0.0, PR_ALPHA_DEFAULT);
+	pagerank_build(&new_g, 20, 0.85, 0.0, PR_ALPHA_DEFAULT);
 
 	// Mark targets that have an incoming redirect whose title existed as a canonical
 	// page in the old snapshot (heuristic for renames).

@@ -484,7 +484,7 @@ STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth, u32 k_paths) {
 		return;
 	}
 
-	pagerank_build((Graph*)g, 20, 0.85, 0.0001);
+	pagerank_build((Graph*)g, 20, 0.85, 0.0001, PR_ALPHA_DEFAULT);
 
 	PRSampler samp;
 	if (!prsampler_build(&samp, g->pagerank, g->N, 1234567ULL)) {
@@ -510,8 +510,8 @@ STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth, u32 k_paths) {
 		return;
 	}
 
-	fprintf(stdout, "\n[bench] iters=%u max_depth=%u k=%u (pagerank alpha=1.6)\n", iters, (unsigned)max_depth,
-			(unsigned)k_paths);
+	fprintf(stdout, "\n[bench] iters=%u max_depth=%u k=%u (pagerank alpha=%.1f)\n", iters, (unsigned)max_depth,
+			(unsigned)k_paths, PR_ALPHA_DEFAULT);
 
 	u64 bench_start  = get_monotonic_time();
 	u32 found        = 0;

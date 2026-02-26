@@ -108,7 +108,7 @@ STATIC char* hints_cb(const char* buf, int* color, int* bold) {
 }
 
 STATIC void pretty_init(Graph* g) {
-	pagerank_build(g, 20, 0.85, 0.0001);
+	pagerank_build(g, 20, 0.85, 0.0001, PR_ALPHA_DEFAULT);
 
 	pretty_g = g;
 	linenoiseSetCompletionCallback(completion_cb);

@@ -1,6 +1,8 @@
 #include <float.h>
 #include <math.h>
 
+#define PR_ALPHA_DEFAULT 1.6
+
 typedef struct {
 	u32    id;
 	double score;
@@ -62,7 +64,8 @@ STATIC int pr_cmp_desc(const void* a, const void* b) {
 // iters: number of iterations (e.g., 10..30)
 // damp: typical 0.85
 // eps: if >0, stop early when L1 diff < eps
-STATIC void pagerank_build(Graph* g, int iters, double damp, double eps) {
+// alpha: bias exponent for high-PR nodes
+STATIC void pagerank_build(Graph* g, int iters, double damp, double eps, double alpha) {
 	if (!g || !g->validated) {
 		fprintf(stderr, "error: pagerank_build requires validated graph\n");
 		exit(1);
@@ -128,7 +131,6 @@ STATIC void pagerank_build(Graph* g, int iters, double damp, double eps) {
 	// Apply an in-place alpha bias to favor high-PR nodes. The biased scores are
 	// normalized so they still form a proper probability distribution for the
 	// sampler.
-	const double alpha = 1.6;
 	double       sum   = 0.0;
 	for (u32 i = 0; i < N; i++) {
 		double biased = pow(r[i], alpha);
