@@ -131,7 +131,7 @@ STATIC void pagerank_build(Graph* g, int iters, double damp, double eps, double 
 	// Apply an in-place alpha bias to favor high-PR nodes. The biased scores are
 	// normalized so they still form a proper probability distribution for the
 	// sampler.
-	double       sum   = 0.0;
+	double sum = 0.0;
 
 	if (alpha == 1.0f) {
 		for (u32 i = 0; i < N; i++) {

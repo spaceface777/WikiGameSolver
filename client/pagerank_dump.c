@@ -36,6 +36,7 @@
 #define PRDUMP_VERSION 1
 
 #pragma pack(push, 1)
+
 typedef struct {
 	u8  magic[4];
 	u32 version;
@@ -48,6 +49,7 @@ typedef struct {
 	u32   alias_idx;
 	float prob;
 } PRDumpEntry;
+
 #pragma pack(pop)
 
 _Static_assert(sizeof(PRDumpHeader) == 16, "PRDumpHeader must be 16 bytes");
@@ -62,8 +64,8 @@ STATIC void pagerank_dump(Graph* g, const char* out_path) {
 	// Build pagerank if not already computed
 	pagerank_build(g, 100, 0.85, 1e-8, 1.2);
 
-	u32            N  = g->N;
-	const double*  pr = g->pagerank;
+	u32           N  = g->N;
+	const double* pr = g->pagerank;
 
 	printf("Building alias table for %u nodes...\n", (unsigned)N);
 
@@ -191,8 +193,8 @@ STATIC void pagerank_dump(Graph* g, const char* out_path) {
 	free(entries);
 
 	u64 file_size = (u64)strings_off + (u64)total_str_bytes;
-	printf("Wrote pagerank dump: %s (%llu bytes, %u entries, %u string bytes)\n",
-	       out_path, (unsigned long long)file_size, (unsigned)N, (unsigned)total_str_bytes);
+	printf("Wrote pagerank dump: %s (%llu bytes, %u entries, %u string bytes)\n", out_path,
+		   (unsigned long long)file_size, (unsigned)N, (unsigned)total_str_bytes);
 	return;
 
 write_err:

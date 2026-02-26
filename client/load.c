@@ -137,9 +137,9 @@ STATIC u64 db_reader_drain_remaining(DbReader* r) {
 
 #define DB_READ(reader, dst, what)                                  \
 	do {                                                            \
-		DB_REQUIRE((reader), sizeof(dst), (what));                 \
+		DB_REQUIRE((reader), sizeof(dst), (what));                  \
 		memcpy(&(dst), (reader)->buf + (reader)->pos, sizeof(dst)); \
-		db_reader_consume((reader), sizeof(dst));                  \
+		db_reader_consume((reader), sizeof(dst));                   \
 	} while (0)
 
 typedef struct MemSourceCtx {
@@ -187,7 +187,7 @@ STATIC void lzma_source_init(LzmaSourceCtx* ctx, DbSource upstream) {
 	ctx->upstream = upstream;
 	lzma_stream z = LZMA_STREAM_INIT;
 	ctx->strm     = z;
-	ctx->in_buf = (u8*)malloc(DB_IO_BUF_SIZE);
+	ctx->in_buf   = (u8*)malloc(DB_IO_BUF_SIZE);
 	if (!ctx->in_buf) {
 		fprintf(stderr, "error: OOM allocating compressed reader buffer\n");
 		exit(1);
@@ -217,17 +217,17 @@ STATIC size_t lzma_source_fill(void* ctx_ptr, u8* dst, size_t cap, bool* out_eof
 
 	while (ctx->strm.avail_out > 0) {
 		if (ctx->strm.avail_in == 0 && !ctx->in_eof) {
-			bool   src_eof = false;
-			size_t got     = ctx->upstream.fill(ctx->upstream.ctx, ctx->in_buf, DB_IO_BUF_SIZE, &src_eof);
+			bool   src_eof     = false;
+			size_t got         = ctx->upstream.fill(ctx->upstream.ctx, ctx->in_buf, DB_IO_BUF_SIZE, &src_eof);
 			ctx->strm.next_in  = ctx->in_buf;
 			ctx->strm.avail_in = got;
 			ctx->in_eof        = src_eof;
 			if (got == 0 && !ctx->in_eof) db_fail("compressed reader source stalled");
 		}
 
-		size_t in_before  = ctx->strm.avail_in;
-		size_t out_before = ctx->strm.avail_out;
-		lzma_ret ret      = lzma_code(&ctx->strm, ctx->in_eof ? LZMA_FINISH : LZMA_RUN);
+		size_t   in_before  = ctx->strm.avail_in;
+		size_t   out_before = ctx->strm.avail_out;
+		lzma_ret ret        = lzma_code(&ctx->strm, ctx->in_eof ? LZMA_FINISH : LZMA_RUN);
 
 		if (ret == LZMA_STREAM_END) {
 			ctx->finished = true;
@@ -405,10 +405,10 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 		u32 idx = beg;
 		while (idx < end2) {
 			DB_REQUIRE(r, sizeof(u32), "edge block");
-			size_t avail_vals = (r->len - r->pos) / sizeof(u32);
-			size_t need_vals  = (size_t)(end2 - idx);
-			size_t take_vals  = (avail_vals < need_vals) ? avail_vals : need_vals;
-			const u8* q       = r->buf + r->pos;
+			size_t    avail_vals = (r->len - r->pos) / sizeof(u32);
+			size_t    need_vals  = (size_t)(end2 - idx);
+			size_t    take_vals  = (avail_vals < need_vals) ? avail_vals : need_vals;
+			const u8* q          = r->buf + r->pos;
 			for (size_t k = 0; k < take_vals; k++, idx++, q += sizeof(u32)) {
 				u32 v = 0;
 				memcpy(&v, q, sizeof(u32));
@@ -450,11 +450,11 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 	u32 un_n = 0, rt_n = 0, rt_bytes = 0;
 	u32 rt_pad = 0;
 
-	g->nr_unredir      = 0;
-	g->unredir         = NULL;
-	g->nr_redir_titles = 0;
-	g->redir_titles    = NULL;
-	g->redir_arena     = NULL;
+	g->nr_unredir        = 0;
+	g->unredir           = NULL;
+	g->nr_redir_titles   = 0;
+	g->redir_titles      = NULL;
+	g->redir_arena       = NULL;
 	g->redir_arena_bytes = 0;
 	g->edge_flags        = NULL;
 
@@ -548,8 +548,8 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 	int value_width = 1;
 	for (u64 t = known_total_bytes; t >= 10; t /= 10) value_width++;
 
-#define PRINT_DB_SIZE(label, bytes)                                                                              \
-	do {                                                                                                         \
+#define PRINT_DB_SIZE(label, bytes)                                                                          \
+	do {                                                                                                     \
 		double pct = (known_total_bytes == 0) ? 0.0 : (100.0 * (double)(bytes) / (double)known_total_bytes); \
 		printf("[info]   %-32s %*llu (%.2f%%)\n", (label), value_width, (unsigned long long)(bytes), pct);   \
 	} while (0)
@@ -569,7 +569,7 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 	PRINT_DB_SIZE("known_total:", known_total_bytes);
 #undef PRINT_DB_SIZE
 	if (unknown_tail_bytes) {
-		double tail_pct = (known_total_bytes == 0) ? 0.0 : (100.0 * (double)unknown_tail_bytes / (double)known_total_bytes);
+		double tail_pct = 100.0 * (double)unknown_tail_bytes / (double)known_total_bytes;
 		printf("[info]   %-32s %*llu (%.2f%%) (ignored)\n", "unknown_tail_bytes:", value_width,
 			   (unsigned long long)unknown_tail_bytes, tail_pct);
 	}
@@ -647,7 +647,7 @@ STATIC void graph_load_from_file(Graph* g, const char* path) {
 		exit(1);
 	}
 
-	bool is_raw = (memcmp(probe, "WIKI", 4) == 0);
+	bool          is_raw = (memcmp(probe, "WIKI", 4) == 0);
 	FileSourceCtx file_ctx;
 	file_ctx.f = f;
 	if (!is_raw) puts("decompressing db stream...");
@@ -662,8 +662,8 @@ typedef struct {
 } StdinPrefixCtx;
 
 STATIC size_t stdin_prefix_fill(void* ctx_ptr, u8* dst, size_t cap, bool* out_eof) {
-	StdinPrefixCtx* c = (StdinPrefixCtx*)ctx_ptr;
-	size_t total = 0;
+	StdinPrefixCtx* c     = (StdinPrefixCtx*)ctx_ptr;
+	size_t          total = 0;
 
 	// drain prefix bytes first
 	while (c->prefix_pos < 4 && total < cap) {

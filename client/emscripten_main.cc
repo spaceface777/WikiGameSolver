@@ -15,7 +15,7 @@ extern "C" {
 #define CLIENT_HEADER_ONLY
 #include "client.c"
 
-	extern Graph G;
+extern Graph G;
 
 } // extern "C"
 
@@ -26,9 +26,7 @@ using namespace emscripten;
 // Asyncify suspends the WASM while the JS Promise resolves, then resumes
 // with the return value — no second worker or SharedArrayBuffer needed.
 // ----------------------------------------------------------------------------
-EM_ASYNC_JS(int, js_async_fill, (uintptr_t dst, int cap), {
-	return await Module._fillCallback(dst, cap);
-});
+EM_ASYNC_JS(int, js_async_fill, (uintptr_t dst, int cap), { return await Module._fillCallback(dst, cap); });
 
 extern "C" size_t js_async_fill_bridge(void* ctx_ptr, u8* dst, size_t cap, bool* out_eof) {
 	(void)ctx_ptr;

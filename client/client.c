@@ -161,8 +161,8 @@ STATIC Graph G = {0};
 
 #include "bench_mode.c"
 #include "diff_mode.c"
-#include "pagerank_dump.c"
 #include "input.c"
+#include "pagerank_dump.c"
 
 STATIC void atexit_handler(void) {
 	// Intentionally empty. The process exits and OS reclaims memory.
@@ -345,8 +345,8 @@ int main(int argc, char** argv) {
 				const char* eq = NULL;
 				if (strncmp(a, "--dump-pagerank=", 16) == 0) eq = a + 15;
 				const char* v = take_opt_value(&i, argc, argv, "--dump-pagerank", eq);
-				dump_pr_mode = true;
-				dump_pr_path = v;
+				dump_pr_mode  = true;
+				dump_pr_path  = v;
 				continue;
 			}
 
@@ -450,10 +450,8 @@ int main(int argc, char** argv) {
 
 	// Load DB (always exactly once)
 	TIME_INIT();
-	if (strcmp(db_path, "-") == 0)
-		graph_load_from_stdin(&G);
-	else
-		graph_load_from_file(&G, db_path);
+	if (strcmp(db_path, "-") == 0) graph_load_from_stdin(&G);
+	else graph_load_from_file(&G, db_path);
 	atexit(atexit_handler);
 
 	if (dump_pr_mode) {
