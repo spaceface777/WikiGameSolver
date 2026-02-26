@@ -113,11 +113,14 @@ typedef struct PathSet {
 	PathIDs paths[SEARCH_MAX_K];
 } PathSet;
 
+typedef size_t (*DbStreamFillFn)(void* ctx, u8* dst, size_t cap, bool* out_eof);
+
 // ----------------------------------------------------------------------------
 // Shared helpers (declared here, defined in included .c files)
 // ----------------------------------------------------------------------------
 STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len);
 STATIC void graph_load_from_file(Graph* g, const char* path);
+STATIC void graph_load_from_stream(Graph* g, DbStreamFillFn fill, void* ctx, bool is_compressed);
 STATIC u32  graph_find_id(const Graph* g, string title); // returns UINT32_MAX if not found
 STATIC void graph_print_path(const Graph* g, const PathIDs* path);
 STATIC void graph_write_pathset_fd(const Graph* g, int fd, const PathSet* set);

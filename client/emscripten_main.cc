@@ -15,58 +15,35 @@ extern "C" {
 #define CLIENT_HEADER_ONLY
 #include "client.c"
 
-extern Graph G;
-
-#include "thirdparty/liblzma.h"
+	extern Graph G;
 
 } // extern "C"
 
 using namespace emscripten;
 
-// ----------------------------------------------------------------------------
-// JS-callable init function: decompresses and loads the database
-// ----------------------------------------------------------------------------
-int init(long temp_addr, val cb) {
-	char* temp_buf = (char*)temp_addr;
+struct JsInitSourceCtx {
+	val cb;
+};
 
-	puts("decompressing db file...");
-	lzma_stream strm = LZMA_STREAM_INIT;
-	lzma_ret    ret  = lzma_stream_decoder(&strm, UINT64_MAX, 0);
-	if (ret != LZMA_OK) {
-		printf("Error: Cannot initialize decoder\n");
+extern "C" size_t js_init_source_fill(void* ctx_ptr, u8* dst, size_t cap, bool* out_eof) {
+	JsInitSourceCtx* ctx   = (JsInitSourceCtx*)ctx_ptr;
+	int              nread = ctx->cb((uintptr_t)dst, (int)cap).as<int>();
+	if (nread < 0 || (size_t)nread > cap) {
+		printf("Error: Invalid stream callback byte count: %d (cap=%zu)\n", nread, cap);
 		exit(1);
 	}
+	*out_eof = (nread == 0);
+	return (size_t)nread;
+}
 
-	const int LZMA_OUT_BUF_SIZE = 1 << 21;
-
-	char*  output_buffer = NULL;
-	size_t output_size   = 0;
-
-	do {
-		int nread = cb().as<int>();
-
-		strm.next_in  = (uint8_t*)temp_buf;
-		strm.avail_in = nread;
-
-		do {
-			output_buffer  = (char*)realloc(output_buffer, output_size + LZMA_OUT_BUF_SIZE);
-			strm.next_out  = (uint8_t*)(output_buffer + output_size);
-			strm.avail_out = LZMA_OUT_BUF_SIZE;
-
-			ret = lzma_code(&strm, LZMA_RUN);
-			if (ret != LZMA_OK && ret != LZMA_STREAM_END) {
-				printf("Error: Decoding failed: %d\n", ret);
-				exit(1);
-			}
-
-			output_size += LZMA_OUT_BUF_SIZE - strm.avail_out;
-		} while (strm.avail_in > 0);
-	} while (ret != LZMA_STREAM_END);
-
-	lzma_end(&strm);
-	free(temp_buf);
-
-	graph_load_from_mem(&G, output_buffer, (long)output_size);
+// ----------------------------------------------------------------------------
+// JS-callable init function: streams compressed bytes into C loader
+// ----------------------------------------------------------------------------
+int init(long temp_addr, val cb) {
+	(void)temp_addr;
+	puts("loading streamed db...");
+	JsInitSourceCtx ctx = {cb};
+	graph_load_from_stream(&G, js_init_source_fill, &ctx, true);
 
 	return 123;
 }
