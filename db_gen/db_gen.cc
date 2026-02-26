@@ -791,19 +791,28 @@ void write_db() {
 	uint64_t total_output_bytes =
 		header_bytes + outdegree_bytes + edge_bytes + title_len_bytes + title_bytes + v2_total_bytes + link_flags_bytes;
 
+	int value_width = 1;
+	for (uint64_t t = total_output_bytes; t >= 10; t /= 10) {
+		value_width++;
+	}
+	auto print_size_stat = [&](const char* label, uint64_t bytes) {
+		double pct = (total_output_bytes == 0) ? 0.0 : (100.0 * (double)bytes / (double)total_output_bytes);
+		fprintf(stderr, "  %-32s %*llu (%.2f%%)\n", label, value_width, (unsigned long long)bytes, pct);
+	};
+
 	fprintf(stderr, "Output size stats (bytes):\n");
-	fprintf(stderr, "  header: %llu\n", (unsigned long long)header_bytes);
-	fprintf(stderr, "  section1_outdegree_u16_plus_pad: %llu\n", (unsigned long long)outdegree_bytes);
-	fprintf(stderr, "  section2_edges_u32: %llu\n", (unsigned long long)edge_bytes);
-	fprintf(stderr, "  section3_title_lens_u16: %llu\n", (unsigned long long)title_len_bytes);
-	fprintf(stderr, "  section4_title_bytes: %llu\n", (unsigned long long)title_bytes);
-	fprintf(stderr, "  section5_v2_total: %llu\n", (unsigned long long)v2_total_bytes);
-	fprintf(stderr, "    section5_v2_header: %llu\n", (unsigned long long)v2_header_bytes);
-	fprintf(stderr, "    section5_unredir_tuples: %llu\n", (unsigned long long)v2_unredir_tuple_bytes);
-	fprintf(stderr, "    section5_redir_lens_plus_pad: %llu\n", (unsigned long long)v2_redir_len_bytes);
-	fprintf(stderr, "    section5_redir_title_bytes: %llu\n", (unsigned long long)v2_redir_title_bytes);
-	fprintf(stderr, "  section6_link_flags: %llu\n", (unsigned long long)link_flags_bytes);
-	fprintf(stderr, "  total_output_bytes: %llu\n", (unsigned long long)total_output_bytes);
+	print_size_stat("header:", header_bytes);
+	print_size_stat("section1_outdegree_u16_plus_pad:", outdegree_bytes);
+	print_size_stat("section2_edges_u32:", edge_bytes);
+	print_size_stat("section3_title_lens_u16:", title_len_bytes);
+	print_size_stat("section4_title_bytes:", title_bytes);
+	print_size_stat("section5_v2_total:", v2_total_bytes);
+	print_size_stat("  section5_v2_header:", v2_header_bytes);
+	print_size_stat("  section5_unredir_tuples:", v2_unredir_tuple_bytes);
+	print_size_stat("  section5_redir_lens_plus_pad:", v2_redir_len_bytes);
+	print_size_stat("  section5_redir_title_bytes:", v2_redir_title_bytes);
+	print_size_stat("section6_link_flags:", link_flags_bytes);
+	print_size_stat("total_output_bytes:", total_output_bytes);
 
 	fflush(f);
 	sync();

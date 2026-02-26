@@ -545,18 +545,33 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 	u64 known_total_bytes         = header_bytes + section1_outdegree_bytes + section2_edges_u32_bytes +
 							section3_title_lens_bytes + section4_title_bytes + section5_v2_total_bytes +
 							section6_link_flags_bytes;
+	int value_width = 1;
+	for (u64 t = known_total_bytes; t >= 10; t /= 10) value_width++;
+
+#define PRINT_DB_SIZE(label, bytes)                                                                              \
+	do {                                                                                                         \
+		double pct = (known_total_bytes == 0) ? 0.0 : (100.0 * (double)(bytes) / (double)known_total_bytes); \
+		printf("[info]   %-32s %*llu (%.2f%%)\n", (label), value_width, (unsigned long long)(bytes), pct);   \
+	} while (0)
 
 	printf("[info] db section bytes:\n");
-	printf("[info]   header: %llu\n", (unsigned long long)header_bytes);
-	printf("[info]   section1_outdegree_u16_plus_pad: %llu\n", (unsigned long long)section1_outdegree_bytes);
-	printf("[info]   section2_edges_u32: %llu\n", (unsigned long long)section2_edges_u32_bytes);
-	printf("[info]   section3_title_lens_u16: %llu\n", (unsigned long long)section3_title_lens_bytes);
-	printf("[info]   section4_title_bytes: %llu\n", (unsigned long long)section4_title_bytes);
-	printf("[info]   section5_v2_total: %llu\n", (unsigned long long)section5_v2_total_bytes);
-	printf("[info]   section6_link_flags: %llu\n", (unsigned long long)section6_link_flags_bytes);
-	printf("[info]   known_total: %llu\n", (unsigned long long)known_total_bytes);
+	PRINT_DB_SIZE("header:", header_bytes);
+	PRINT_DB_SIZE("section1_outdegree_u16_plus_pad:", section1_outdegree_bytes);
+	PRINT_DB_SIZE("section2_edges_u32:", section2_edges_u32_bytes);
+	PRINT_DB_SIZE("section3_title_lens_u16:", section3_title_lens_bytes);
+	PRINT_DB_SIZE("section4_title_bytes:", section4_title_bytes);
+	PRINT_DB_SIZE("section5_v2_total:", section5_v2_total_bytes);
+	PRINT_DB_SIZE("  section5_v2_header:", section5_v2_header_bytes);
+	PRINT_DB_SIZE("  section5_unredir_tuples:", section5_unredir_bytes);
+	PRINT_DB_SIZE("  section5_redir_lens_plus_pad:", section5_redir_lens_bytes);
+	PRINT_DB_SIZE("  section5_redir_title_bytes:", section5_redir_text_bytes);
+	PRINT_DB_SIZE("section6_link_flags:", section6_link_flags_bytes);
+	PRINT_DB_SIZE("known_total:", known_total_bytes);
+#undef PRINT_DB_SIZE
 	if (unknown_tail_bytes) {
-		printf("[info]   unknown_tail_bytes: %llu (ignored)\n", (unsigned long long)unknown_tail_bytes);
+		double tail_pct = (known_total_bytes == 0) ? 0.0 : (100.0 * (double)unknown_tail_bytes / (double)known_total_bytes);
+		printf("[info]   %-32s %*llu (%.2f%%) (ignored)\n", "unknown_tail_bytes:", value_width,
+			   (unsigned long long)unknown_tail_bytes, tail_pct);
 	}
 	printf("[info] unredirect entries: %u\n", un_n);
 	printf("[info] redirect titles: %u\n", rt_n);
