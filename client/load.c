@@ -639,3 +639,56 @@ STATIC void graph_load_from_file(Graph* g, const char* path) {
 	graph_load_from_stream(g, file_source_fill, &file_ctx, !is_raw);
 	fclose(f);
 }
+
+typedef struct {
+	u8     prefix[4];
+	size_t prefix_pos;
+	FILE*  f;
+} StdinPrefixCtx;
+
+STATIC size_t stdin_prefix_fill(void* ctx_ptr, u8* dst, size_t cap, bool* out_eof) {
+	StdinPrefixCtx* c = (StdinPrefixCtx*)ctx_ptr;
+	size_t total = 0;
+
+	// drain prefix bytes first
+	while (c->prefix_pos < 4 && total < cap) {
+		dst[total++] = c->prefix[c->prefix_pos++];
+	}
+
+	if (total < cap) {
+		size_t got = fread(dst + total, 1, cap - total, c->f);
+		if (got == 0 && ferror(c->f)) {
+			fprintf(stderr, "error: could not read from stdin: %s\n", strerror(errno));
+			exit(1);
+		}
+		total += got;
+	}
+
+	*out_eof = feof(c->f) && c->prefix_pos >= 4;
+	return total;
+}
+
+STATIC void graph_load_from_stdin(Graph* g) {
+	puts("streaming db from stdin...");
+
+	// Read 4-byte probe to detect compression without seeking.
+	u8     probe[4] = {0};
+	size_t nprobe   = fread(probe, 1, sizeof(probe), stdin);
+	if (nprobe < sizeof(probe) && ferror(stdin)) {
+		fprintf(stderr, "error: could not read from stdin: %s\n", strerror(errno));
+		exit(1);
+	}
+	if (nprobe < sizeof(probe)) db_fail("stdin too short for db");
+
+	bool is_raw = (memcmp(probe, "WIKI", 4) == 0);
+
+	// Chain a prefix source (the 4 probe bytes) with stdin to form a
+	// single contiguous stream — no seeking required.
+	StdinPrefixCtx ctx;
+	memcpy(ctx.prefix, probe, 4);
+	ctx.prefix_pos = 0;
+	ctx.f          = stdin;
+
+	if (!is_raw) puts("decompressing stdin stream...");
+	graph_load_from_stream(g, stdin_prefix_fill, &ctx, !is_raw);
+}

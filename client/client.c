@@ -120,6 +120,7 @@ typedef size_t (*DbStreamFillFn)(void* ctx, u8* dst, size_t cap, bool* out_eof);
 // ----------------------------------------------------------------------------
 STATIC void graph_load_from_mem(Graph* g, char* raw, long raw_len);
 STATIC void graph_load_from_file(Graph* g, const char* path);
+STATIC void graph_load_from_stdin(Graph* g);
 STATIC void graph_load_from_stream(Graph* g, DbStreamFillFn fill, void* ctx, bool is_compressed);
 STATIC u32  graph_find_id(const Graph* g, string title); // returns UINT32_MAX if not found
 STATIC void graph_print_path(const Graph* g, const PathIDs* path);
@@ -160,6 +161,7 @@ STATIC Graph G = {0};
 
 #include "bench_mode.c"
 #include "diff_mode.c"
+#include "pagerank_dump.c"
 #include "input.c"
 
 STATIC void atexit_handler(void) {
@@ -176,6 +178,7 @@ STATIC void usage(const char* prog) {
 			"  %s [options] --bench N       Benchmark mode\n"
 			"  %s [options] --bench-k32 --bench N  Benchmark with K=32 shortest-hop paths\n"
 			"  %s --diff OLD_DB NEW_DB      Snapshot diff mode\n"
+			"  %s --dump-pagerank OUT       Dump pagerank alias table for mmap sampling\n"
 #ifdef ENABLE_SERVER
 			"  %s [options] --listen PORT    Server mode\n"
 #endif
@@ -196,7 +199,7 @@ STATIC void usage(const char* prog) {
 			"\n"
 			"Notes:\n"
 			"  - Options may be given as --opt=value or --opt value.\n",
-			prog, prog, prog, prog, prog,
+			prog, prog, prog, prog, prog, prog,
 #ifdef ENABLE_SERVER
 			prog,
 #endif
@@ -244,6 +247,8 @@ int main(int argc, char** argv) {
 	bool        diff_mode     = false;
 	const char* diff_old_path = NULL;
 	const char* diff_new_path = NULL;
+	bool        dump_pr_mode  = false;
+	const char* dump_pr_path  = NULL;
 
 #ifdef ENABLE_SERVER
 	bool server_mode = false;
@@ -336,6 +341,15 @@ int main(int argc, char** argv) {
 				continue;
 			}
 
+			if (strcmp(a, "--dump-pagerank") == 0 || strncmp(a, "--dump-pagerank=", 16) == 0) {
+				const char* eq = NULL;
+				if (strncmp(a, "--dump-pagerank=", 16) == 0) eq = a + 15;
+				const char* v = take_opt_value(&i, argc, argv, "--dump-pagerank", eq);
+				dump_pr_mode = true;
+				dump_pr_path = v;
+				continue;
+			}
+
 			// --db or --db=PATH
 			if (strcmp(a, "-d") == 0 || strncmp(a, "--db", 4) == 0) {
 				const char* eq = NULL;
@@ -415,6 +429,10 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "error: --diff cannot be combined with --bench\n");
 		return 2;
 	}
+	if (dump_pr_mode && (bench_mode || diff_mode)) {
+		fprintf(stderr, "error: --dump-pagerank cannot be combined with --bench or --diff\n");
+		return 2;
+	}
 	if (!bench_mode && bench_k_paths != 1) {
 		fprintf(stderr, "error: --bench-k/--bench-k32 requires --bench\n");
 		return 2;
@@ -432,8 +450,21 @@ int main(int argc, char** argv) {
 
 	// Load DB (always exactly once)
 	TIME_INIT();
-	graph_load_from_file(&G, db_path);
+	if (strcmp(db_path, "-") == 0)
+		graph_load_from_stdin(&G);
+	else
+		graph_load_from_file(&G, db_path);
 	atexit(atexit_handler);
+
+	if (dump_pr_mode) {
+		if (pos_n != 0) {
+			fprintf(stderr, "error: START/TARGET not allowed with --dump-pagerank\n");
+			usage(argv[0]);
+			return 2;
+		}
+		pagerank_dump(&G, dump_pr_path);
+		return 0;
+	}
 
 #ifdef ENABLE_SERVER
 	if (server_mode) {

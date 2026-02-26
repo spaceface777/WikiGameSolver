@@ -21,15 +21,20 @@ extern "C" {
 
 using namespace emscripten;
 
-struct JsInitSourceCtx {
-	val cb;
-};
+// ----------------------------------------------------------------------------
+// Async fill via Module._fillCallback (set by JS before calling init).
+// Asyncify suspends the WASM while the JS Promise resolves, then resumes
+// with the return value — no second worker or SharedArrayBuffer needed.
+// ----------------------------------------------------------------------------
+EM_ASYNC_JS(int, js_async_fill, (uintptr_t dst, int cap), {
+	return await Module._fillCallback(dst, cap);
+});
 
-extern "C" size_t js_init_source_fill(void* ctx_ptr, u8* dst, size_t cap, bool* out_eof) {
-	JsInitSourceCtx* ctx   = (JsInitSourceCtx*)ctx_ptr;
-	int              nread = ctx->cb((uintptr_t)dst, (int)cap).as<int>();
+extern "C" size_t js_async_fill_bridge(void* ctx_ptr, u8* dst, size_t cap, bool* out_eof) {
+	(void)ctx_ptr;
+	int nread = js_async_fill((uintptr_t)dst, (int)cap);
 	if (nread < 0 || (size_t)nread > cap) {
-		printf("Error: Invalid stream callback byte count: %d (cap=%zu)\n", nread, cap);
+		printf("Error: Invalid fill byte count: %d (cap=%zu)\n", nread, cap);
 		exit(1);
 	}
 	*out_eof = (nread == 0);
@@ -37,14 +42,12 @@ extern "C" size_t js_init_source_fill(void* ctx_ptr, u8* dst, size_t cap, bool* 
 }
 
 // ----------------------------------------------------------------------------
-// JS-callable init function: streams compressed bytes into C loader
+// JS-callable init function: streams bytes into C loader via async fill.
+// JS must set Module._fillCallback before calling this.
 // ----------------------------------------------------------------------------
-int init(long temp_addr, val cb) {
-	(void)temp_addr;
+int init() {
 	puts("loading streamed db...");
-	JsInitSourceCtx ctx = {cb};
-	graph_load_from_stream(&G, js_init_source_fill, &ctx, true);
-
+	graph_load_from_stream(&G, js_async_fill_bridge, NULL, true);
 	return 123;
 }
 
