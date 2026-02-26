@@ -42,3 +42,5 @@ dep/
 *.log
 *.sqlite
 *.sqlite3
+prdumps/
+venv/
