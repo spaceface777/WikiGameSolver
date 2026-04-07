@@ -62,7 +62,7 @@ STATIC void pagerank_dump(Graph* g, const char* out_path) {
 	}
 
 	// Build pagerank if not already computed
-	pagerank_build(g, 100, 0.85, 1e-8, 1.2);
+	pagerank_build(g, 100, 0.85, 1e-8, 1.0);
 
 	u32           N  = g->N;
 	const double* pr = g->pagerank;
