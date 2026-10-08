@@ -1,6 +1,7 @@
 
 #include <gc/gc.h>
 
+#include "wiki_links.h"
 #include <libxml/parser.h>
 #include <libxml/xmlreader.h>
 #include <unistd.h>
@@ -11,6 +12,203 @@
 #include <iostream>
 #include <map>
 #include <set>
+#include <stdexcept>
+#include <tuple>
+#include <vector>
+
+namespace meta
+{
+	inline void need(bool ok, const char* message) {
+		if (!ok) throw std::runtime_error(message);
+	}
+
+	inline void number(std::vector<unsigned char>& b, uint64_t n, unsigned bytes) {
+		for (unsigned i = 0; i < bytes; i++) b.push_back((unsigned char)(n >> (i * 8)));
+	}
+
+	inline void text(std::vector<unsigned char>& b, const std::string& s) {
+		need(s.size() <= 65535, "metadata string too long");
+		number(b, s.size(), 2);
+		b.insert(b.end(), s.begin(), s.end());
+	}
+
+	inline uint64_t decimal(const std::string& s) {
+		need(!s.empty(), "missing decimal");
+		uint64_t n = 0;
+		for (char c : s) {
+			need(c >= '0' && c <= '9' && n <= (UINT64_MAX - (c - '0')) / 10, "invalid decimal");
+			n = n * 10 + c - '0';
+		}
+		return n;
+	}
+
+	inline std::string value(xmlTextReaderPtr r) {
+		const xmlChar* p = xmlTextReaderConstValue(r);
+		return p ? (const char*)p : "";
+	}
+
+	inline std::string attribute(xmlTextReaderPtr r, const char* key) {
+		xmlChar*    p = xmlTextReaderGetAttribute(r, (const xmlChar*)key);
+		std::string s = p ? (const char*)p : "";
+		if (p) xmlFree(p);
+		return s;
+	}
+
+	struct Page {
+		uint64_t    id = 0, revision = 0;
+		int32_t     ns     = 0;
+		bool        has_id = false, has_ns = false, has_revision = false, redirect = false;
+		unsigned    revisions = 0, title_elements = 0;
+		std::string title;
+
+		void reset() {
+			*this = Page();
+		}
+	};
+
+	inline std::vector<unsigned char> encode(const Page& p) {
+		need(p.has_id && p.id != 0 && p.title_elements == 1 && !p.title.empty() && p.has_ns,
+			 "page lacks unique ID, title or namespace");
+		need(p.revisions == 1, "page must contain exactly one selected revision");
+		need(p.has_revision ? p.revision != 0 : p.revision == 0, "invalid revision presence or ID");
+		std::vector<unsigned char> b;
+		number(b, p.id, 8);
+		number(b, (uint32_t)p.ns, 4);
+		unsigned flags = (p.has_revision ? 1 : 0) | (p.redirect ? 8 : 0);
+		number(b, flags, 1);
+		number(b, p.revision, 8);
+		text(b, p.title);
+		return b;
+	}
+
+	// A spool stores exact page records from the graph's XML reader, before pruning.
+	inline void spoolSite(FILE* f, const std::vector<unsigned char>& site) {
+		need(!site.empty() && site.size() <= 65535, "missing or oversized siteinfo");
+		const unsigned char magic[4] = {'S', 'I', 'N', 'F'};
+		unsigned char       len[4];
+		for (int i = 0; i < 4; i++) len[i] = (unsigned char)(site.size() >> (8 * i));
+		need(fwrite(magic, 1, 4, f) == 4 && fwrite(len, 1, 4, f) == 4 &&
+				 fwrite(site.data(), 1, site.size(), f) == site.size(),
+			 "siteinfo spool write failed");
+	}
+
+	inline void spool(FILE* f, const Page& p) {
+		auto b = encode(p);
+		need(b.size() < 65536, "page record exceeds spool limit");
+		unsigned char len[4];
+		for (int i = 0; i < 4; i++) len[i] = (unsigned char)(b.size() >> (8 * i));
+		need(fwrite(len, 1, 4, f) == 4 && fwrite(b.data(), 1, b.size(), f) == b.size(), "spool write failed");
+	}
+
+	// Observe the same reader and selected revision as the graph generator.
+	struct Observer {
+		Page                                                             page;
+		bool                                                             inside = false, revision = false, site = false;
+		std::string                                                      field, site_field;
+		std::string                                                      wiki, lang, site_case;
+		std::vector<unsigned char>                                       site_bytes;
+		std::vector<std::tuple<int32_t, std::string, std::string, bool>> namespaces;
+		bool                                                             site_done = false;
+
+
+		wiki_links::Config config() const {
+			wiki_links::Config result;
+			result.capitalized = site_case == "first-letter";
+			for (const auto& [id, casing, name, alias] : namespaces)
+				result.add_namespace(id, name, casing.empty() ? result.capitalized : casing == "first-letter", alias);
+			return result;
+		}
+
+		void sealSite() {
+			need(!wiki.empty() && !site_case.empty(), "missing wiki or title case");
+			text(site_bytes, wiki);
+			text(site_bytes, lang);
+			text(site_bytes, site_case);
+			need(namespaces.size() <= 65535, "too many namespaces");
+			number(site_bytes, namespaces.size(), 2);
+			for (const auto& ns : namespaces) {
+				number(site_bytes, (uint32_t)std::get<0>(ns), 4);
+				text(site_bytes, std::get<1>(ns));
+				text(site_bytes, std::get<2>(ns));
+				number(site_bytes, std::get<3>(ns), 1);
+			}
+			site_done = true;
+		}
+
+		void event(xmlTextReaderPtr r) {
+			const char* name  = (const char*)xmlTextReaderConstLocalName(r);
+			int         depth = xmlTextReaderDepth(r), type = xmlTextReaderNodeType(r);
+			if (type == XML_READER_TYPE_ELEMENT) {
+				if (depth == 0 && std::string(name) == "mediawiki") lang = attribute(r, "xml:lang");
+				if (depth == 1 && std::string(name) == "siteinfo") site = true;
+				if (site && depth == 2 && (std::string(name) == "dbname" || std::string(name) == "case"))
+					site_field = name;
+				if (site && depth == 3 && (std::string(name) == "namespace" || std::string(name) == "ns")) {
+					auto key = attribute(r, "key");
+					if (key.empty()) key = attribute(r, "id");
+					need(!key.empty(), "namespace lacks key or id");
+					size_t used   = 0;
+					auto   parsed = std::stoll(key, &used);
+					need(used == key.size() && parsed >= INT32_MIN && parsed <= INT32_MAX, "invalid namespace key");
+					int32_t id = (int32_t)parsed;
+					namespaces.emplace_back(id, attribute(r, "case"), std::string(), std::string(name) == "ns");
+				}
+				if (depth == 1 && std::string(name) == "page") {
+					page.reset();
+					inside   = true;
+					revision = false;
+				}
+				if (!inside) return;
+				if (depth == 2 && std::string(name) == "revision") {
+					need(++page.revisions == 1, "multiple selected revisions on one page");
+					revision = true;
+				}
+				if (depth == 2 && std::string(name) == "redirect") page.redirect = true;
+				if (depth == 2 && std::string(name) == "title")
+					need(++page.title_elements == 1, "duplicate page title element");
+				if (depth == 2 && std::string(name) == "ns") need(!page.has_ns, "duplicate page namespace element");
+				if ((depth == 2 &&
+					 (std::string(name) == "title" || std::string(name) == "ns" || std::string(name) == "id")) ||
+					(revision && depth == 3 && std::string(name) == "id"))
+					field = name;
+			} else if (type == XML_READER_TYPE_TEXT || type == XML_READER_TYPE_CDATA) {
+				std::string s = value(r);
+				if (site) {
+					if (depth == 3 && site_field == "dbname") wiki += s;
+					if (depth == 3 && site_field == "case") site_case += s;
+					if (depth == 4 && !namespaces.empty()) std::get<2>(namespaces.back()) += s;
+				}
+				if (!inside) return;
+				if (field == "title" && depth == 3) page.title += s;
+				else if (field == "ns" && depth == 3) {
+					size_t used = 0;
+					auto   ns   = std::stoll(s, &used);
+					need(used == s.size() && ns >= INT32_MIN && ns <= INT32_MAX, "invalid page namespace");
+					page.ns     = (int32_t)ns;
+					page.has_ns = true;
+				} else if (field == "id" && depth == 3) {
+					need(!page.has_id, "duplicate page ID element");
+					page.id     = decimal(s);
+					page.has_id = true;
+				} else if (field == "id" && depth == 4 && revision) {
+					need(!page.has_revision, "duplicate revision ID");
+					page.revision     = decimal(s);
+					page.has_revision = true;
+				}
+			} else if (type == XML_READER_TYPE_END_ELEMENT) {
+				if (site && depth == 2) site_field.clear();
+				if (site && depth == 1 && std::string(name) == "siteinfo") {
+					site = false;
+					sealSite();
+				}
+				if (depth == 3 || depth == 2) field.clear();
+				if (depth == 2 && std::string(name) == "revision") revision = false;
+				if (depth == 1 && std::string(name) == "page") inside = false;
+			}
+		}
+	};
+} // namespace meta
+
 
 void nop(void* p) {
 	(void)p;
@@ -47,6 +245,17 @@ static inline uint8_t** map_string_u8ptr_get_check(map_string_u8ptr* m, string k
 map_string_u8ptr  link_flag_map                  = new_map_string_u8ptr();
 map_string_string redirects                      = new_map_string_string();
 static bool       g_prune_unused_redirect_titles = false;
+static std::string g_meta_spool_path;
+static FILE* g_meta_spool = nullptr;
+static meta::Observer g_meta_observer;
+static wiki_links::Config g_parser_config;
+// A rolling monthly export can contain different page IDs with the same title.
+// Retain their identities, but do not choose a graph owner from export order.
+static std::set<string> g_ambiguous_titles;
+static void note_owned_title(const string& title) {
+	if (map_string_stringptr_get_check(&link_map, title) || map_string_string_get_check(&redirects, title))
+		g_ambiguous_titles.insert(title);
+}
 
 enum LINK_FLAGS : uint8_t {
 	LINK_IS_RENAME  = 1 << 0,
@@ -54,8 +263,9 @@ enum LINK_FLAGS : uint8_t {
 };
 
 static void print_usage(const char* argv0) {
-	std::cerr << "Usage: " << argv0 << " [YYYY-MM-DD] [--prune-unused-redirect-titles]\n";
+	std::cerr << "Usage: " << argv0 << " [YYYY-MM-DD] [--prune-unused-redirect-titles] [--meta-spool PATH]\n";
 	std::cerr << "  --prune-unused-redirect-titles  Keep only redirect titles referenced by unredirect edges.\n";
+	std::cerr << "  --meta-spool PATH  Save page IDs, revisions, titles, and siteinfo for a sidecar.\n";
 }
 
 static bool parse_dump_date(const char* s, int* out_dump_date) {
@@ -78,6 +288,10 @@ static int parse_cli_args(int argc, char** argv) {
 		if (arg == "--help" || arg == "-h") {
 			print_usage(argv[0]);
 			return 1;
+		}
+		if (arg == "--meta-spool" && i + 1 < argc) {
+			g_meta_spool_path = argv[++i];
+			continue;
 		}
 		if (arg == "--prune-unused-redirect-titles") {
 			g_prune_unused_redirect_titles = true;
@@ -112,96 +326,6 @@ static inline string get_string(string s) {
 	return s;
 }
 
-static inline constexpr std::size_t find_in_range(std::string_view sv, std::string_view needle, std::size_t start = 0,
-												  std::size_t end = std::string_view::npos) {
-	if (start > sv.size()) return std::string_view::npos;
-	end = std::min(end, sv.size());
-	if (end < start) return std::string_view::npos;
-
-	// optimization: use memchr for single-char needles
-	if (needle.size() == 1) {
-		const char* p = (const char*)memchr(sv.data() + start, needle[0], end - start);
-		return p ? (std::size_t)(p - sv.data()) : std::string_view::npos;
-	}
-
-	const auto local = sv.substr(start, end - start).find(needle);
-	return (local == std::string_view::npos) ? std::string_view::npos : start + local;
-}
-
-static inline std::string_view trim_ascii(std::string_view s) {
-	while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\n' || s.front() == '\r')) {
-		s.remove_prefix(1);
-	}
-	while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\n' || s.back() == '\r')) {
-		s.remove_suffix(1);
-	}
-	return s;
-}
-
-static inline bool ascii_ci_equal(std::string_view a, std::string_view b) {
-	if (a.size() != b.size()) return false;
-	for (size_t i = 0; i < a.size(); i++) {
-		unsigned char ca = (unsigned char)a[i];
-		unsigned char cb = (unsigned char)b[i];
-		if (tolower(ca) != tolower(cb)) return false;
-	}
-	return true;
-}
-
-static inline void collect_links_in_range(std::string_view article, xmlChar* article_, std::size_t start,
-										  std::size_t end, bool is_infobox, std::map<string, uint8_t>& out) {
-	if (start >= end || end > article.size()) return;
-
-	std::size_t last = start;
-	while (true) {
-		std::size_t link_start = find_in_range(article, "[[", last, end);
-		if (link_start == std::string::npos || link_start >= end) break;
-
-		std::size_t link_end = find_in_range(article, "]]", link_start + 2, end);
-		if (link_end == std::string::npos || link_end > end) break;
-		if (link_start + 2 >= article.size()) break;
-
-		article_[link_start + 2] = (xmlChar)toupper((unsigned char)article_[link_start + 2]);
-
-		std::string_view raw_target = "";
-		std::string_view raw_label  = "";
-		std::size_t      pipe_idx   = find_in_range(article, "|", link_start + 2, link_end);
-		if (pipe_idx != std::string::npos) {
-			raw_target = std::string_view(article.data() + link_start + 2, pipe_idx - link_start - 2);
-			raw_label  = std::string_view(article.data() + pipe_idx + 1, link_end - pipe_idx - 1);
-		} else {
-			raw_target = std::string_view(article.data() + link_start + 2, link_end - link_start - 2);
-		}
-
-		std::size_t hash_idx = find_in_range(raw_target, "#");
-		if (hash_idx != std::string::npos) {
-			raw_target = std::string_view(raw_target.data(), hash_idx);
-		}
-
-		std::string_view target = trim_ascii(raw_target);
-		if (target.empty()) {
-			last = link_end + 2;
-			continue;
-		}
-
-		uint8_t flags = 0;
-		if (is_infobox) flags |= LINK_IS_INFOBOX;
-		if (pipe_idx != std::string::npos) {
-			std::string_view label = trim_ascii(raw_label);
-			if (!ascii_ci_equal(target, label)) flags |= LINK_IS_RENAME;
-		}
-
-		string key = get_string(target);
-		auto   it  = out.find(key);
-		if (it == out.end()) {
-			out[key] = flags;
-		} else {
-			it->second |= flags;
-		}
-		last = link_end + 2;
-	}
-}
-
 int parse_xml() {
 	xmlParserCtxtPtr parser_context = xmlNewParserCtxt();
 	if (!parser_context) {
@@ -217,6 +341,7 @@ int parse_xml() {
 	}
 
 	bool in_page = false;
+	unsigned selected_revisions = 0;
 
 	string                    page_title = "";
 	std::map<string, uint8_t> page_links;
@@ -231,9 +356,29 @@ int parse_xml() {
 		} else if (result == -1) {
 			// Error occurred.
 			std::cerr << "Error reading XML document." << std::endl;
-			break;
+			exit(1);
 		}
 
+		int depth = xmlTextReaderDepth(reader);
+		const xmlChar* name = xmlTextReaderConstLocalName(reader);
+		int type = xmlTextReaderNodeType(reader);
+		if (type == XML_READER_TYPE_ELEMENT && depth == 1 && xmlStrEqual(name, (const xmlChar*)"page"))
+			selected_revisions = 0;
+		if (type == XML_READER_TYPE_ELEMENT && depth == 2 && xmlStrEqual(name, (const xmlChar*)"revision") &&
+			++selected_revisions > 1) {
+			std::cerr << "Multiple selected revisions on one page." << std::endl;
+			exit(1);
+		}
+		// Record the same XML stream before graph pruning.
+		if (g_meta_spool && type == XML_READER_TYPE_END_ELEMENT && depth == 1 &&
+			xmlStrEqual(name, (const xmlChar*)"page"))
+			meta::spool(g_meta_spool, g_meta_observer.page);
+		g_meta_observer.event(reader);
+		if (g_meta_observer.site_done) {
+			g_parser_config = g_meta_observer.config();
+			if (g_meta_spool) meta::spoolSite(g_meta_spool, g_meta_observer.site_bytes);
+			g_meta_observer.site_done = false;
+		}
 		// Process the current node.
 		switch (xmlTextReaderNodeType(reader)) {
 		case XML_READER_TYPE_ELEMENT: {
@@ -244,98 +389,44 @@ int parse_xml() {
 				break;
 			} else {
 				if (xmlStrcmp(tag, (const xmlChar*)"title") == 0) {
-					xmlTextReaderRead(reader);
-					const xmlChar* title = xmlTextReaderConstValue(reader);
-					page_title           = get_string((const char*)title);
+					if (xmlTextReaderIsEmptyElement(reader) || xmlTextReaderRead(reader) != 1 ||
+						!xmlTextReaderConstValue(reader)) {
+						std::cerr << "Missing page title." << std::endl;
+						exit(1);
+					}
+					g_meta_observer.event(reader);
+					page_title = get_string((const char*)xmlTextReaderConstValue(reader));
+					g_parser_config.current_title = g_meta_observer.page.title;
 				}
 
 				else if (xmlStrcmp(tag, (const xmlChar*)"text") == 0) {
-					xmlTextReaderRead(reader);
-					xmlChar*         article_ = (xmlChar*)xmlTextReaderConstValue(reader);
-					std::string_view article  = (const char*)article_;
-
-					size_t last_end = 0, link_start = 0;
-					while ((link_start = find_in_range(article, "[[", last_end)) != std::string::npos) {
-						size_t info_start = find_in_range(article, "{{", last_end, link_start);
-						if (info_start != std::string::npos) {
-							size_t infoEnd = info_start + 2;
-							int    n       = 1;
-							while (n > 0) {
-								size_t nextOpen  = find_in_range(article, "{{", infoEnd);
-								size_t nextClose = find_in_range(article, "}}", infoEnd);
-								if (nextClose == std::string::npos) break;
-								if (nextOpen != std::string::npos && nextOpen < nextClose) {
-									n++;
-									infoEnd = nextOpen + 2;
-								} else {
-									n--;
-									infoEnd = nextClose + 2;
-								}
-							}
-
-							collect_links_in_range(article, article_, info_start, infoEnd, true, page_links);
-							last_end = infoEnd;
-							continue;
-						}
-
-						size_t tag_start = find_in_range(article, "<", last_end, link_start);
-						if (tag_start != std::string::npos) {
-							// strip <!-- comment --> s
-							size_t comment_start = find_in_range(article, "<!--", last_end, link_start);
-							if (comment_start != std::string::npos) {
-								size_t comment_end = find_in_range(article, "-->", comment_start + 4);
-								if (comment_end == std::string::npos) break;
-								last_end = comment_end + 3;
-								continue;
-							}
-
-							// strip <ref> and <nowiki>
-							size_t tag_end = find_in_range(article, ">", tag_start + 1);
-							if (tag_end != std::string::npos) {
-								std::string_view full_opening_tag =
-									std::string_view(article.data() + tag_start + 1, tag_end - tag_start - 1);
-								size_t           space_idx = find_in_range(full_opening_tag, " ");
-								std::string_view tag_name  = space_idx == std::string::npos
-																 ? full_opening_tag
-																 : full_opening_tag.substr(0, space_idx);
-								if (tag_name == "ref" || tag_name == "nowiki") {
-									if (full_opening_tag.size() > 0 && full_opening_tag.back() == '/') {
-										// self-closing tag
-										last_end = tag_end + 1;
-										continue;
-									}
-									std::string_view closing_tag = tag_name == "ref" ? "</ref>" : "</nowiki>";
-									size_t closing_tag_start     = find_in_range(article, closing_tag, tag_end + 1);
-									if (closing_tag_start != std::string::npos) {
-										last_end = closing_tag_start + closing_tag.size();
-										continue;
-									} else {
-										break;
-									}
-								}
-							}
-						}
-
-						size_t end = find_in_range(article, "]]", link_start);
-						if (end == std::string::npos) break;
-						collect_links_in_range(article, article_, link_start, end + 2, false, page_links);
-
-						last_end = end + 2;
+					if (xmlTextReaderIsEmptyElement(reader)) break;
+					if (xmlTextReaderRead(reader)!=1) break;
+					const xmlChar* article = xmlTextReaderConstValue(reader);
+					if (!article) break;
+					for (const auto& link : wiki_links::parse((const char*)article, g_parser_config)) {
+						page_links[get_string(std::string_view(link.first))] = link.second;
 					}
 				}
 
 				else if (xmlStrcmp(tag, (const xmlChar*)"ns") == 0) {
-					xmlTextReaderRead(reader);
+					if (xmlTextReaderIsEmptyElement(reader) || xmlTextReaderRead(reader) != 1 ||
+						!xmlTextReaderConstValue(reader)) {
+						std::cerr << "Missing page namespace." << std::endl;
+						exit(1);
+					}
+					g_meta_observer.event(reader);
 					int ns = atoi((const char*)xmlTextReaderConstValue(reader));
 					if (ns != 0) in_page = false;
 				}
 
 				else if (xmlStrcmp(tag, (const xmlChar*)"redirect") == 0) {
-					const char* title_ = (const char*)xmlTextReaderGetAttribute(reader, (const xmlChar*)"title");
-					string      title  = title_;
-					char*       hash   = (char*)memchr(title_, '#', title.len);
-					if (hash) title = std::string_view(title_, hash - title_);
-					map_string_string_set(&redirects, page_title, get_string(title));
+					auto raw_target = meta::attribute(reader, "title");
+					auto target = wiki_links::title(raw_target, g_parser_config);
+					if (!target.valid) throw std::runtime_error("invalid monthly redirect target");
+					if (target.text.empty()) target.text = g_parser_config.current_title;
+					note_owned_title(page_title);
+					map_string_string_set(&redirects, page_title, get_string(std::string_view(target.text)));
 
 					in_page = false;
 				}
@@ -358,6 +449,7 @@ int parse_xml() {
 				}
 				linkptr[i] = nullptr;
 				flagptr[i] = 0;
+				note_owned_title(page_title);
 				map_string_stringptr_set(&link_map, page_title, linkptr);
 				map_string_u8ptr_set(&link_flag_map, page_title, flagptr);
 
@@ -828,6 +920,7 @@ int resolve_link_id_len(const string& t, int* out_redir_len) {
 	string           cur = t;
 
 	for (int hop = 0; hop < MAX_REDIRECT_HOPS; ++hop) {
+		if (g_ambiguous_titles.count(cur)) return -1;
 		int id = bsearch(cur);
 		if (id != -1) {
 			if (out_redir_len) *out_redir_len = hop;
@@ -850,6 +943,7 @@ int resolve_link_id(const string& t) {
 	string           cur = t;
 
 	for (int hop = 0; hop < MAX_REDIRECT_HOPS; ++hop) {
+		if (g_ambiguous_titles.count(cur)) return -1;
 		// If this title exists as a real page, we’re done.
 		int id = bsearch(cur);
 		if (id != -1) return id;
@@ -868,6 +962,7 @@ int resolve_link_id(const string& t) {
 }
 
 static inline int is_redirect_title(const string& t) {
+	if (g_ambiguous_titles.count(t)) return 0;
 	string* p = map_string_string_get_check(&redirects, t);
 	return p != nullptr;
 }
@@ -1023,6 +1118,7 @@ static void build_unredirect_db() {
 
 		FOR_IN_MAP(redirects, redir_title, string, redir_target, string, {
 			(void)redir_target;
+			if (g_ambiguous_titles.count(redir_title)) continue;
 			if (r_n == r_cap) {
 				r_cap = r_cap * 2 + 1024;
 				r     = (string*)GC_realloc(r, sizeof(string) * r_cap);
@@ -1077,13 +1173,71 @@ static void build_unredirect_db() {
 	fprintf(stderr, "Redirect titles used: %u (%u bytes)\n", redir_titles_n, redir_titles_bytes);
 }
 
+static void finish_metadata() {
+	if (!g_meta_spool) return;
+	auto read_number = [](unsigned bytes) {
+		uint64_t value = 0;
+		for (unsigned i = 0; i < bytes; ++i) {
+			int c = fgetc(g_meta_spool);
+			meta::need(c != EOF, "truncated identity spool");
+			value |= uint64_t(c) << (8 * i);
+		}
+		return value;
+	};
+	meta::need(fseek(g_meta_spool, 12, SEEK_SET) == 0, "identity spool seek failed");
+	uint64_t site_size = read_number(4);
+	meta::need(fseek(g_meta_spool, site_size, SEEK_CUR) == 0, "identity spool seek failed");
+	std::vector<unsigned char> owners(page_count);
+	uint64_t count = 0, ns0 = 0, redirects = 0, missing = 0, last_id = 0;
+	for (;;) {
+		int first = fgetc(g_meta_spool);
+		if (first == EOF) break;
+		uint64_t size = first | (read_number(3) << 8);
+		meta::need(size >= 23 && size < 65536, "invalid identity record size");
+		std::vector<unsigned char> record(size);
+		meta::need(fread(record.data(), 1, size, g_meta_spool) == size, "truncated identity record");
+		uint64_t id = 0;
+		for (unsigned i = 0; i < 8; ++i) id |= uint64_t(record[i]) << (8 * i);
+		meta::need(id > last_id, "page IDs must increase");
+		last_id = id;
+		bool article_namespace = !record[8] && !record[9] && !record[10] && !record[11];
+		unsigned char flags = record[12];
+		uint16_t length = record[21] | (uint16_t(record[22]) << 8);
+		meta::need(length && length + 23u == size, "invalid identity title");
+		int index = article_namespace && !(flags & 8)
+			? bsearch(std::string((const char*)record.data() + 23, length)) : -1;
+		flags |= index >= 0 ? 16 : 32;
+		if (index >= 0) {
+			meta::need(!owners[index], "ambiguous graph owner");
+			owners[index] = 1;
+		}
+		long end = ftell(g_meta_spool);
+		meta::need(end >= 0 && fseek(g_meta_spool, end - size + 12, SEEK_SET) == 0 &&
+			fputc(flags, g_meta_spool) != EOF && fseek(g_meta_spool, end, SEEK_SET) == 0,
+			"identity ownership write failed");
+		++count;
+		ns0 += article_namespace;
+		redirects += !!(flags & 8);
+		missing += !(flags & 1);
+	}
+	meta::need(!ferror(g_meta_spool) && std::count(owners.begin(), owners.end(), 0) == 0,
+		"incomplete graph ownership");
+	std::vector<unsigned char> footer;
+	meta::number(footer, 0, 4);
+	for (auto value : {count, ns0, redirects, missing}) meta::number(footer, value, 8);
+	meta::need(fseek(g_meta_spool, 0, SEEK_END) == 0 &&
+		fwrite(footer.data(), 1, footer.size(), g_meta_spool) == footer.size() && fclose(g_meta_spool) == 0,
+		"identity spool close failed");
+	g_meta_spool = nullptr;
+}
+
 int main(int argc, char** argv) {
 	int parse_status = parse_cli_args(argc, argv);
 	if (parse_status == 1) return 0;
 	if (parse_status == -1) return 1;
 
 	fprintf(stderr, "Options: prune_unused_redirect_titles=%s\n", g_prune_unused_redirect_titles ? "on" : "off");
-	fprintf(stderr, "Graph includes all links; per-edge flags encode infobox/rename hints in trailing section 5.\n");
+	fprintf(stderr, "Graph uses static article links; flags describe normalized labels and template context.\n");
 	if (!g_prune_unused_redirect_titles) {
 		fprintf(stderr, "Redirect title pruning is disabled (default).\n");
 	}
@@ -1091,7 +1245,20 @@ int main(int argc, char** argv) {
 	GC_INIT();
 	xmlMemSetup(GC_free, GC_malloc, GC_realloc, GC_strdup);
 
-	page_count = parse_xml();
+	if (!g_meta_spool_path.empty()) {
+		g_meta_spool = fopen(g_meta_spool_path.c_str(), "w+b");
+		if (!g_meta_spool) { perror("meta spool"); return 1; }
+		std::vector<unsigned char> header;
+		meta::number(header, wiki_links::parser_policy, 4);
+		meta::number(header, wiki_links::unicode_version(), 4);
+		if (fwrite(header.data(), 1, header.size(), g_meta_spool) != header.size()) return 1;
+	}
+	try {
+		page_count = parse_xml();
+	} catch (const std::exception& e) {
+		std::cerr << "Metadata input: " << e.what() << std::endl;
+		return 1;
+	}
 
 	titles = (string*)GC_malloc(page_count * sizeof(string));
 	links  = (PageLinks*)GC_malloc(page_count * sizeof(PageLinks));
@@ -1101,8 +1268,10 @@ int main(int argc, char** argv) {
 		int i = 0;
 		FOR_IN_MAP_STRING_STRINGPTR(link_map, title, _, {
 			(void)_;
-			titles[i++] = title;
+			if (!g_ambiguous_titles.count(title)) titles[i++] = title;
 		})
+		page_count = i;
+		fprintf(stderr, "Quarantined ambiguous monthly titles: %zu\n", g_ambiguous_titles.size());
 	}
 
 	std::sort(titles, titles + page_count);
@@ -1155,6 +1324,12 @@ int main(int argc, char** argv) {
 	build_unredirect_db();
 
 	write_db();
-
+	try {
+		meta::need(!ferror(stdout), "graph output failed");
+		finish_metadata();
+	} catch (const std::exception& e) {
+		std::cerr << e.what() << std::endl;
+		return 1;
+	}
 	return 0;
 }
