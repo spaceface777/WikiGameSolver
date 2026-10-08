@@ -13,6 +13,11 @@ jobs:
         lang: [en, fr, de, ja, it, ru, es, zh, pl, nl, pt, ar, fi, hu, th, he, tr, sv, el, fa]
 
     name: ${{ matrix.lang }}wiki Dump Gen
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -20,20 +25,27 @@ jobs:
     - name: Prerequisites
       id: setup
       run: |
-        sudo apt install -y jq xz-utils libxml2-dev libgc-dev libicu-dev
-        date=$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs.pagelinkstable.updated | split(" ") | .[0]')
-        if [ -z "$date" ]; then
-          echo "Error: ${{ matrix.lang }}wiki date is empty"
-          exit 1
-        fi
-
-        date=$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.enwiki.jobs.pagelinkstable.updated | split(" ") | .[0]')
-        if [ -z "$date" ]; then
-          echo "Error: enwiki date is empty"
-          exit 1
-        fi
-        
-        echo "date=$date" >> $GITHUB_OUTPUT
+        sudo apt install -y jq xz-utils zstd libxml2-dev libgc-dev libicu-dev
+        wiki='${{ matrix.lang }}wiki'
+        curl -fsSL --retry 3 https://dumps.wikimedia.org/index.json > index.json
+        job=$(jq -er --arg wiki "$wiki" '.wikis[$wiki].jobs | if has("articlesdumprecombine") then "articlesdumprecombine" else "articlesdump" end' index.json)
+        path=$(jq -er --arg wiki "$wiki" --arg job "$job" '.wikis[$wiki].jobs[$job].files | if length==1 then to_entries[0].value.url else error("article archive is split") end' index.json)
+        path=${path#/}
+        [[ $path =~ ^${wiki}/([0-9]{8})/${wiki}-([0-9]{8})-pages-articles\.xml\.bz2$ ]]
+        [[ ${BASH_REMATCH[1]} == "${BASH_REMATCH[2]}" ]]
+        month=${BASH_REMATCH[1]}
+        curl -fsSL --retry 3 "https://dumps.wikimedia.org/$wiki/$month/dumpstatus.json" > status.json
+        source=$(jq -er --arg job "$job" --arg path "/$path" '
+          .jobs[$job] | select(.status=="done" and (.files|length)==1) | .files[] |
+          select(.url==$path and .size>0 and (.md5|test("^[0-9a-f]{32}$"))) |
+          "\(.size) \(.md5)"' status.json)
+        read -r size md5 <<< "$source"
+        {
+          echo "path=$path"
+          echo "date=${month:0:4}-${month:4:2}-${month:6:2}"
+          echo "size=$size"
+          echo "md5=$md5"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Initialize swapfile
       run: |
@@ -47,27 +59,50 @@ jobs:
 
     - name: Build
       run: |
-        cd db_gen
-        clang++ -Ofast -flto -march=native -mtune=native -I/usr/include/libxml2 db_gen.cc -o ../gen -std=c++17 -lxml2 -lgc -licuuc
-        cd ..
-
-        curl -L "https://dumps.wikimedia.org/$(curl -L https://dumps.wikimedia.org/index.json | jq --raw-output '.wikis.${{ matrix.lang }}wiki.jobs | if has("articlesdumprecombine") then .articlesdumprecombine else .articlesdump end | .files | to_entries[0].value.url')" | bzcat | ./gen "${{ steps.setup.outputs.date }}" | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "${{ matrix.lang }}.bin"
-
-        # if size of file is less than 1KB, something went wrong
-        if [ $(stat -c %s "${{ matrix.lang }}.bin") -lt 1024 ]; then
-          echo "File is too small, something went wrong"
+        lang='${{ matrix.lang }}'
+        uri='https://dumps.wikimedia.org/${{ steps.setup.outputs.path }}'
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"; rm -f "$lang.bin.part" "$lang.bin.meta.zst.part"' EXIT
+        clang++ -Ofast -flto -march=native -mtune=native -I/usr/include/libxml2 db_gen/db_gen.cc -o gen -std=c++17 -lxml2 -lgc -licuuc
+        mkfifo "$work/source.fifo"
+        python3 db_gen/sidecar.py hash < "$work/source.fifo" > "$work/source.hash" & hash_pid=$!
+        if ! curl -fL --retry 3 "$uri" | tee "$work/source.fifo" | bzcat | ./gen '${{ steps.setup.outputs.date }}' --meta-spool "$work/pages.spool" | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "$lang.bin.part"; then
+          wait "$hash_pid" || true
           exit 1
         fi
+        wait "$hash_pid"
+        read -r _ actual_md5 actual_size < "$work/source.hash"
+        [[ $actual_size == '${{ steps.setup.outputs.size }}' && $actual_md5 == '${{ steps.setup.outputs.md5 }}' ]]
+        [[ $(stat -c %s "$lang.bin.part") -ge 1024 ]]
+        python3 db_gen/sidecar.py build "${lang}wiki" "$uri" "$work/source.hash" "$lang.bin.part" "$work/pages.spool" "$lang.bin.meta.zst.part"
+        zstd -tq "$lang.bin.meta.zst.part"
+        mv "$lang.bin.part" "$lang.bin"
+        mv "$lang.bin.meta.zst.part" "$lang.bin.meta.zst"
 
-        aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws configure set region auto
-        aws configure set output json
-        aws s3 cp ${{ matrix.lang }}.bin s3://wiki-dbs/${{ matrix.lang }}.bin --endpoint-url ${{ secrets.R2_AWS_ENDPOINT_URL }} --checksum-algorithm CRC32
+    - name: Publish R2 assets
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: auto
+        R2_ENDPOINT: ${{ secrets.R2_AWS_ENDPOINT_URL }}
+      run: |
+        for file in '${{ matrix.lang }}.bin' '${{ matrix.lang }}.bin.meta.zst'; do
+          aws s3 cp "$file" "s3://wiki-dbs/$file" --endpoint-url "$R2_ENDPOINT" --checksum-algorithm CRC32
+        done
 
-    - name: Upload
+    - name: Upload graph
       uses: softprops/action-gh-release@v2
       with:
         files: ${{ matrix.lang }}.bin
         tag_name: ${{ steps.setup.outputs.date }}
         name: ${{ steps.setup.outputs.date }}
+
+    - name: Save optional sidecar artifact
+      continue-on-error: true
+      uses: actions/upload-artifact@v4
+      with:
+        name: sidecar-${{ matrix.lang }}-${{ steps.setup.outputs.date }}-${{ github.run_attempt }}
+        path: ${{ matrix.lang }}.bin.meta.zst
+        compression-level: 0
+        retention-days: 7
+        if-no-files-found: error
