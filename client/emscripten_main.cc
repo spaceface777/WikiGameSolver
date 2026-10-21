@@ -57,13 +57,13 @@ STATIC val path_ids_to_js(const PathIDs* path_ids) {
 	{
 		u32 id = path_ids->ids[0];
 		if (path_ids->start_redir_idx < G.nr_redir_titles) {
-			string      redir_title = G.redir_titles[path_ids->start_redir_idx];
-			string      dest_title  = G.titles[id];
+			string      redir_title = graph_redir_title(&G, path_ids->start_redir_idx);
+			string      dest_title  = graph_title(&G, id);
 			std::string formatted   = std::string(STR_PTR(redir_title), STR_LEN(redir_title)) + " (redirects to " +
 									std::string(STR_PTR(dest_title), STR_LEN(dest_title)) + ")";
 			arr.call<void>("push", formatted);
 		} else {
-			string title = G.titles[id];
+			string title = graph_title(&G, id);
 			arr.call<void>("push", std::string(STR_PTR(title), STR_LEN(title)));
 		}
 	}
@@ -76,14 +76,14 @@ STATIC val path_ids_to_js(const PathIDs* path_ids) {
 		int ridx = unredir_lookup(&G, a, b);
 		if (ridx >= 0 && (u32)ridx < G.nr_redir_titles) {
 			// Format: "redirect_title (redirects to dest_title)"
-			string      redir_title = G.redir_titles[ridx];
-			string      dest_title  = G.titles[b];
+			string      redir_title = graph_redir_title(&G, ridx);
+			string      dest_title  = graph_title(&G, b);
 			std::string formatted   = std::string(STR_PTR(redir_title), STR_LEN(redir_title)) + " (redirects to " +
 									std::string(STR_PTR(dest_title), STR_LEN(dest_title)) + ")";
 			arr.call<void>("push", formatted);
 		} else {
 			// Use the destination title directly
-			string title = G.titles[b];
+			string title = graph_title(&G, b);
 			arr.call<void>("push", std::string(STR_PTR(title), STR_LEN(title)));
 		}
 	}

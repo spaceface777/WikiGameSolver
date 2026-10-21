@@ -64,24 +64,20 @@
 // ----------------------------------------------------------------------------
 // Types
 // ----------------------------------------------------------------------------
-typedef struct UnredirEdge {
-	u32 src;
-	u32 dest;
-	u32 redir_idx;
-} UnredirEdge;
-
 typedef struct Graph {
 	u32 N; // nodes
 	u32 L; // edges
 
 	// Titles are sorted lexicographically (required for binary search and pretty input).
-	string* titles;
-	char*   titles_arena;
-	u32     titles_arena_bytes;
+	u32*  title_offsets; // N+1 offsets into titles_arena; see graph_title()
+	char* titles_arena;
+	u32   titles_arena_bytes;
 
-	// v2 redirect helpers
-	u32          nr_unredir;
-	UnredirEdge* unredir;
+	// v2 redirect helpers: the edges whose link went through a redirect title, and which title.
+	u32  nr_unredir;
+	u64* unredir_bits;    // one bit per edge
+	u32* unredir_rank;    // set bits before each 64-edge word
+	u8*  unredir_alias24; // redirect title index per set bit, in edge order; see graph_edge_redirect()
 
 	// Outgoing CSR
 	u32* out_offsets; // N+1
@@ -89,13 +85,13 @@ typedef struct Graph {
 
 	u32 max_out_degree;
 
-	string* redir_titles;
-	u32     nr_redir_titles;
-	u32     redir_arena_bytes;
-	char*   redir_arena;
+	u32*  redir_offsets; // nr_redir_titles+1 offsets into redir_arena; see graph_redir_title()
+	u32   nr_redir_titles;
+	u32   redir_arena_bytes;
+	char* redir_arena;
 
-	// Optional trailing section in newer v2 dumps: one u8 flag byte per edge.
-	u8* edge_flags; // length L when present, else NULL
+	// Optional trailing section in newer v2 dumps: two flag bits per edge.
+	u8* edge_flags; // (L+3)/4 bytes when present, else NULL
 
 	double* pagerank; // length N, NULL if not computed
 
@@ -132,6 +128,14 @@ STATIC void pagerank_build(Graph* g, int iters, double damp, double eps, double 
 STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth, u32 k_paths);
 STATIC void diff_run(const char* old_path, const char* new_path, int topk);
 STATIC void search_prepare_graph(const Graph* g);
+
+static inline string graph_title(const Graph* g, u32 i) {
+	return STR(g->titles_arena + g->title_offsets[i], (int)(g->title_offsets[i + 1] - g->title_offsets[i]));
+}
+
+static inline string graph_redir_title(const Graph* g, u32 i) {
+	return STR(g->redir_arena + g->redir_offsets[i], (int)(g->redir_offsets[i + 1] - g->redir_offsets[i]));
+}
 
 #if !defined(CLIENT_HEADER_ONLY)
 

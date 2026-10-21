@@ -90,12 +90,12 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
 			exit(1);
 		}
 	}
-	for (u32 i = 0; i < new_g.nr_unredir; i++) {
-		UnredirEdge* e = &new_g.unredir[i];
-		if (e->redir_idx >= new_g.nr_redir_titles) continue;
-		string rt = new_g.redir_titles[e->redir_idx];
-		if (graph_find_id(&old_g, rt) != UINT32_MAX) new_dest_has_old_redirect[e->dest] = true;
-	}
+	for (u32 w = 0, i = 0; new_g.nr_unredir && w < (new_g.L + 63) / 64; w++)
+		for (u64 bits = new_g.unredir_bits[w]; bits; bits &= bits - 1, i++) {
+			string rt   = graph_redir_title(&new_g, u24_load(new_g.unredir_alias24 + (size_t)i * 3u));
+			u32    dest = u24_load(u24_cptr(new_g.out_edges24, w * 64 + (u32)__builtin_ctzll(bits)));
+			if (graph_find_id(&old_g, rt) != UINT32_MAX) new_dest_has_old_redirect[dest] = true;
+		}
 
 	// Build a sorted index of redirect titles in the new snapshot for quick lookup
 	// when testing whether an old title has become a redirect.
@@ -109,7 +109,7 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
 			exit(1);
 		}
 		for (int i = 0; i < new_redir_n; i++) {
-			new_redir_index[i].title = new_g.redir_titles[i];
+			new_redir_index[i].title = graph_redir_title(&new_g, i);
 			new_redir_index[i].ridx  = (u32)i;
 		}
 		qsort(new_redir_index, (size_t)new_redir_n, sizeof(RedirTitleIdx), redir_title_cmp);
@@ -143,7 +143,7 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
 	// Collect top additions: canonical titles absent in old graph and not explained by
 	// old titles being turned into redirects.
 	for (u32 id = 0; id < new_g.N; id++) {
-		string t = new_g.titles[id];
+		string t = graph_title(&new_g, id);
 		if (graph_find_id(&old_g, t) != UINT32_MAX) continue;
 		if (new_dest_has_old_redirect && new_dest_has_old_redirect[id]) continue;
 		double pr = pagerank_score(&new_g, id);
@@ -153,7 +153,7 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
 	// Collect top deletions: canonical titles missing in new graph and not preserved
 	// as redirects.
 	for (u32 id = 0; id < old_g.N; id++) {
-		string t = old_g.titles[id];
+		string t = graph_title(&old_g, id);
 		if (graph_find_id(&new_g, t) != UINT32_MAX) continue;
 		if (old_titles_redirected && old_titles_redirected[id]) continue;
 		double pr = pagerank_score(&old_g, id);
@@ -166,14 +166,14 @@ STATIC void diff_run(const char* old_path, const char* new_path, int topk) {
 	printf("\nTop %d new articles (PageRank-biased, excluding renames):\n", topk);
 	for (int i = 0; i < add_sz; i++) {
 		DiffTop* d = &add_heap[i];
-		string   t = new_g.titles[d->id];
+		string   t = graph_title(&new_g, d->id);
 		printf("  %2d. %.*s (PR=%.6g)\n", i + 1, STR_LEN(t), STR_PTR(t), d->score);
 	}
 
 	printf("\nTop %d deletions (PageRank-biased, excluding renames):\n", topk);
 	for (int i = 0; i < del_sz; i++) {
 		DiffTop* d = &del_heap[i];
-		string   t = old_g.titles[d->id];
+		string   t = graph_title(&old_g, d->id);
 		printf("  %2d. %.*s (PR=%.6g)\n", i + 1, STR_LEN(t), STR_PTR(t), d->score);
 	}
 

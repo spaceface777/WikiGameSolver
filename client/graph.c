@@ -19,6 +19,14 @@ STATIC inline const u8* u24_cptr(const u8* base, u32 idx) {
 	return base + (size_t)idx * 3u;
 }
 
+// Redirect title index the edge's link went through, or -1 for a direct link.
+STATIC inline int graph_edge_redirect(const Graph* g, u32 edge) {
+	u64 word = g->unredir_bits ? g->unredir_bits[edge >> 6] : 0, below = (1ull << (edge & 63)) - 1;
+	if (!(word >> (edge & 63) & 1)) return -1;
+	u32 i = g->unredir_rank[edge >> 6] + (u32)__builtin_popcountll(word & below);
+	return (int)u24_load(g->unredir_alias24 + (size_t)i * 3u);
+}
+
 STATIC inline int string_cmp_raw(const char* a, int al, const char* b, int bl) {
 	int m = MIN(al, bl);
 	int c = memcmp(a, b, (size_t)m);
@@ -56,7 +64,7 @@ STATIC u32 graph_find_id(const Graph* g, string title) {
 	u32 l = 0, r = (g->N == 0 ? 0 : g->N - 1);
 	while (g->N && l <= r) {
 		u32    m = l + (r - l) / 2;
-		string t = g->titles[m];
+		string t = graph_title(g, m);
 
 		int c = string_cmp_raw(key, keylen, STR_PTR(t), STR_LEN(t));
 		if (c == 0) return m;
@@ -78,7 +86,7 @@ STATIC u32 graph_find_id_case_insensitive_unique(const Graph* g, string title, b
 	int         keylen = STR_LEN(title);
 	u32         found  = UINT32_MAX;
 	for (u32 i = 0; i < g->N; i++) {
-		string t = g->titles[i];
+		string t = graph_title(g, i);
 		if (!string_eq_ascii_ci_raw(key, keylen, STR_PTR(t), STR_LEN(t))) continue;
 		if (found != UINT32_MAX) {
 			if (ambiguous) *ambiguous = true;
@@ -89,25 +97,37 @@ STATIC u32 graph_find_id_case_insensitive_unique(const Graph* g, string title, b
 	return found;
 }
 
+// Index of edge src->dst in out_edges24 (binary search; adjacency is sorted), or UINT32_MAX.
+STATIC u32 graph_edge_index(const Graph* g, u32 src, u32 dst) {
+	u32 l = g->out_offsets[src], r = g->out_offsets[src + 1];
+	while (l < r) {
+		u32 m = l + (r - l) / 2;
+		if (u24_load(u24_cptr(g->out_edges24, m)) < dst) l = m + 1;
+		else r = m;
+	}
+	return l < g->out_offsets[src + 1] && u24_load(u24_cptr(g->out_edges24, l)) == dst ? l : UINT32_MAX;
+}
+
 // Resolve a redirect title index into a canonical page ID.
 // Returns UINT32_MAX for none/ambiguous. ambiguous=true means conflicting destinations.
 STATIC u32 graph_find_redirect_dest_by_index_unique(const Graph* g, u32 redir_idx, bool* ambiguous) {
 	if (ambiguous) *ambiguous = false;
 	u32  found = UINT32_MAX;
 	bool have  = false;
-	for (u32 i = 0; i < g->nr_unredir; i++) {
-		UnredirEdge* e = &g->unredir[i];
-		if (e->redir_idx != redir_idx) continue;
-		if (!have) {
-			found = e->dest;
-			have  = true;
-			continue;
+	for (u32 w = 0, i = 0; g->nr_unredir && w < (g->L + 63) / 64; w++)
+		for (u64 bits = g->unredir_bits[w]; bits; bits &= bits - 1, i++) {
+			if (u24_load(g->unredir_alias24 + (size_t)i * 3u) != redir_idx) continue;
+			u32 dest = u24_load(u24_cptr(g->out_edges24, w * 64 + (u32)__builtin_ctzll(bits)));
+			if (!have) {
+				found = dest;
+				have  = true;
+				continue;
+			}
+			if (found != dest) {
+				if (ambiguous) *ambiguous = true;
+				return UINT32_MAX;
+			}
 		}
-		if (found != e->dest) {
-			if (ambiguous) *ambiguous = true;
-			return UINT32_MAX;
-		}
-	}
 	return have ? found : UINT32_MAX;
 }
 
@@ -124,7 +144,7 @@ STATIC u32 graph_find_id_in_redirect_titles_unique(const Graph* g, string title,
 	u32  matched_idx  = UINT32_MAX;
 	bool have_match   = false;
 	for (u32 i = 0; i < g->nr_redir_titles; i++) {
-		string rt = g->redir_titles[i];
+		string rt = graph_redir_title(g, i);
 		bool   ok = case_insensitive ? string_eq_ascii_ci_raw(STR_PTR(title), STR_LEN(title), STR_PTR(rt), STR_LEN(rt))
 									 : string_eq(title, rt);
 		if (!ok) continue;
@@ -190,19 +210,3 @@ STATIC u32 graph_find_id_fuzzy(const Graph* g, string title, bool* ambiguous, u3
 	return UINT32_MAX;
 }
 
-// Outgoing adjacency membership check using binary search.
-// Requires adjacency lists are sorted (asserted at startup).
-STATIC bool graph_has_edge(const Graph* g, u32 src, u32 dst) {
-	u32 beg = g->out_offsets[src];
-	u32 end = g->out_offsets[src + 1];
-	// binary search over [beg, end)
-	u32 l = beg, r = end;
-	while (l < r) {
-		u32 m = l + (r - l) / 2;
-		u32 v = u24_load(u24_cptr(g->out_edges24, m));
-		if (v < dst) l = m + 1;
-		else r = m;
-	}
-	if (l >= end) return false;
-	return u24_load(u24_cptr(g->out_edges24, l)) == dst;
-}

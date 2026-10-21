@@ -116,7 +116,7 @@ INLINE void bit_clear(u64* bits, u32 i) {
 }
 
 INLINE u8 edge_flags_or_zero(const Graph* g, u32 edge_idx) {
-	return g->edge_flags ? g->edge_flags[edge_idx] : 0u;
+	return g->edge_flags ? (g->edge_flags[edge_idx >> 2] >> ((edge_idx & 3u) * 2)) & 3u : 0u;
 }
 
 INLINE u32 edge_special_cost(u8 flags) {

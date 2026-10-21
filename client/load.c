@@ -322,9 +322,37 @@ enum {
 	LINK_FLAG_IS_INFOBOX = 1u << 1,
 };
 
+// Redirect annotations are one bit per edge plus the redirect title index of each set bit, in edge order.
+STATIC void unredir_init(Graph* g, u32 n) {
+	size_t words       = ((size_t)g->L + 63) / 64;
+	g->nr_unredir      = n;
+	g->unredir_bits    = (u64*)calloc(words + 1, sizeof(u64));
+	g->unredir_rank    = (u32*)malloc((words + 1) * sizeof(u32));
+	g->unredir_alias24 = (u8*)malloc((size_t)n * 3u + 1);
+	if (!g->unredir_bits || !g->unredir_rank || !g->unredir_alias24) db_fail("OOM unredir");
+	if (g->nr_redir_titles > 0xFFFFFFu) db_fail("redirect titles exceed 24-bit ids");
+}
+
+// Edges must be added in increasing order; *count is the number added so far.
+STATIC void unredir_add(Graph* g, u32* count, u32 edge, u32 redir_idx) {
+	if (*count == g->nr_unredir) db_fail("too many unredir entries");
+	if (redir_idx >= g->nr_redir_titles) db_fail("unredir redir_idx out of range");
+	g->unredir_bits[edge >> 6] |= 1ull << (edge & 63);
+	u24_store(g->unredir_alias24 + (size_t)(*count)++ * 3u, redir_idx);
+}
+
+STATIC void unredir_finish(Graph* g, u32 count) {
+	if (count != g->nr_unredir) db_fail("unredir count mismatch");
+	u32 total = 0;
+	for (size_t w = 0; w <= ((size_t)g->L + 63) / 64; w++) {
+		g->unredir_rank[w] = total;
+		total += (u32)__builtin_popcountll(g->unredir_bits[w]);
+	}
+}
+
 STATIC void validate_graph_fully(Graph* g) {
 #if !defined(DB_NO_VALIDATE)
-	if (!g->titles || !g->out_offsets || !g->out_edges24) db_fail("internal graph not initialized");
+	if (!g->title_offsets || !g->out_offsets || !g->out_edges24) db_fail("internal graph not initialized");
 
 	if (g->N == 0) db_fail("N==0");
 	if (g->N > 0xFFFFFFu) db_fail("N exceeds 24-bit id range");
@@ -332,7 +360,7 @@ STATIC void validate_graph_fully(Graph* g) {
 
 	// Titles must be sorted
 	for (u32 i = 1; i < g->N; i++) {
-		if (string_cmp(g->titles[i - 1], g->titles[i]) > 0) {
+		if (string_cmp(graph_title(g, i - 1), graph_title(g, i)) > 0) {
 			fprintf(stderr, "error: titles not sorted at %u\n", i);
 			exit(1);
 		}
@@ -364,29 +392,7 @@ STATIC void validate_graph_fully(Graph* g) {
 		}
 	}
 
-	// Validate unredir table invariants
-	for (u32 i = 0; i < g->nr_unredir; i++) {
-		UnredirEdge* e = &g->unredir[i];
-		if (e->src >= g->N || e->dest >= g->N) db_fail("unredir src/dest out of range");
-		if (e->redir_idx >= g->nr_redir_titles) db_fail("unredir redir_idx out of range");
-		if (i > 0) {
-			UnredirEdge* p      = &g->unredir[i - 1];
-			bool         sorted = (p->src < e->src) || (p->src == e->src && p->dest < e->dest) ||
-						  (p->src == e->src && p->dest == e->dest && p->redir_idx <= e->redir_idx);
-			if (!sorted) db_fail("unredir not sorted");
-			if (p->src == e->src && p->dest == e->dest) db_fail("duplicate unredir (src,dest)");
-		}
-	}
-
-	// Validate each unredir pair is a real edge in the graph (since adjacency is sorted).
-	// Potentially expensive but startup-only.
-	for (u32 i = 0; i < g->nr_unredir; i++) {
-		UnredirEdge* e = &g->unredir[i];
-		if (!graph_has_edge(g, e->src, e->dest)) {
-			fprintf(stderr, "error: unredir edge (%u -> %u) not present in graph\n", e->src, e->dest);
-			exit(1);
-		}
-	}
+	// Redirect annotations index real edges by construction (see unredir_add).
 
 #endif // !defined(DB_NO_VALIDATE)
 
@@ -474,11 +480,11 @@ STATIC void sort_u32(u32* a, u32 n) {
 	}
 }
 
-STATIC void v3_titles(DbReader* r, u32 n, u32 bytes, string** titles, char** arena) {
+STATIC void v3_titles(DbReader* r, u32 n, u32 bytes, u32** offsets, char** arena) {
 	V3Bytes s = v3_section(r);
-	*titles   = (string*)malloc((size_t)n * sizeof(string) + 1);
+	*offsets  = (u32*)malloc(((size_t)n + 1) * sizeof(u32));
 	*arena    = (char*)malloc((size_t)bytes + 1);
-	if (!*titles || !*arena) db_fail("OOM v3 titles");
+	if (!*offsets || !*arena) db_fail("OOM v3 titles");
 	u32 off = 0, prev_len = 0;
 	for (u32 i = 0; i < n; i++) {
 		u32 prefix = v3_byte(&s);
@@ -489,11 +495,12 @@ STATIC void v3_titles(DbReader* r, u32 n, u32 bytes, string** titles, char** are
 		if (len > 65535 || len > bytes - off) db_fail("v3 title bytes");
 		if (prefix) memmove(*arena + off, *arena + off - prev_len, prefix);
 		memcpy(*arena + off + prefix, s.p, (size_t)(nl - s.p));
-		(*titles)[i] = STR(*arena + off, (int)len);
-		s.p          = nl + 1;
+		(*offsets)[i] = off;
+		s.p           = nl + 1;
 		off += len;
 		prev_len = len;
 	}
+	(*offsets)[n] = off;
 	if (off != bytes) db_fail("v3 title bytes sum mismatch");
 	v3_done(&s);
 }
@@ -603,15 +610,16 @@ STATIC void graph_load_v3(Graph* g, DbReader* r, u32 title_bytes) {
 	free(order);
 	free(indeg);
 
-	v3_titles(r, N, title_bytes, &g->titles, &g->titles_arena);
+	v3_titles(r, N, title_bytes, &g->title_offsets, &g->titles_arena);
 	g->titles_arena_bytes = title_bytes;
 
 	// Redirect annotations: each target's aliases, then per link to such a target one bit, and the alias rank when set.
 	V3Bytes alias_lists = v3_section(r), alias_bits = v3_section(r), alias_ranks = v3_section(r);
 	u32*    alias_off = (u32*)malloc(((size_t)N + 1) * sizeof(u32));
 	u32*    alias_ids = (u32*)malloc(((size_t)MIN(U, R) + 1) * sizeof(u32));
-	g->unredir        = (UnredirEdge*)malloc(((size_t)U + 1) * sizeof(UnredirEdge));
-	if (!alias_off || !alias_ids || !g->unredir) db_fail("OOM v3 aliases");
+	if (!alias_off || !alias_ids) db_fail("OOM v3 aliases");
+	g->nr_redir_titles = R;
+	unredir_init(g, U);
 	alias_off[0] = 0;
 	for (u32 i = 0; i < N; i++) {
 		u32 n = v3_varint(&alias_lists);
@@ -620,39 +628,43 @@ STATIC void graph_load_v3(Graph* g, DbReader* r, u32 title_bytes) {
 			if ((alias_ids[alias_off[i] + k] = v3_varint(&alias_lists)) >= R) db_fail("v3 alias id");
 		alias_off[i + 1] = alias_off[i] + n;
 	}
-	u32 u = 0;
-	for (u32 s = 0; s < N; s++)
-		for (u32 k = g->out_offsets[s]; k < g->out_offsets[s + 1]; k++) {
-			u32 dest = u24_load(u24_cptr(g->out_edges24, k)), n = alias_off[dest + 1] - alias_off[dest];
-			if (!n || !v3_bits(&alias_bits, 1)) continue;
-			u32 v = v3_varint(&alias_ranks);
-			if (v >= n || u == U) db_fail("v3 alias rank");
-			g->unredir[u++] = (UnredirEdge){s, dest, alias_ids[alias_off[dest] + v]};
-		}
-	if (u != U) db_fail("v3 unredir count");
-	g->nr_unredir = U;
+	u32 count = 0;
+	for (u32 k = 0; k < L; k++) {
+		u32 dest = u24_load(u24_cptr(g->out_edges24, k)), n = alias_off[dest + 1] - alias_off[dest];
+		if (!n || !v3_bits(&alias_bits, 1)) continue;
+		u32 v = v3_varint(&alias_ranks);
+		if (v >= n) db_fail("v3 alias rank");
+		unredir_add(g, &count, k, alias_ids[alias_off[dest] + v]);
+	}
+	unredir_finish(g, count);
 	v3_done(&alias_lists);
 	v3_done(&alias_bits);
 	v3_done(&alias_ranks);
 	free(alias_off);
 	free(alias_ids);
 
-	g->nr_redir_titles   = R;
 	g->redir_arena_bytes = RB;
-	v3_titles(r, R, RB, &g->redir_titles, &g->redir_arena);
+	v3_titles(r, R, RB, &g->redir_offsets, &g->redir_arena);
 
 	// Flags: each target's predicted value, then one bitmap per bit that differs anywhere.
 	V3Bytes predicted = v3_section(r), planes = v3_section(r);
 	if ((size_t)(predicted.end - predicted.p) != N) db_fail("v3 flag predictions");
-	u8 active     = v3_byte(&planes);
-	g->edge_flags = (u8*)malloc((size_t)L + 1);
-	if (!g->edge_flags) db_fail("OOM edge_flags");
-	for (u32 k = 0; k < L; k++) g->edge_flags[k] = predicted.p[u24_load(u24_cptr(g->out_edges24, k))];
+	u8        active   = v3_byte(&planes);
+	const u8* plane[8] = {0};
 	for (int b = 0; b < 8; b++) {
 		if (!(active >> b & 1)) continue;
 		if ((size_t)(planes.end - planes.p) < ((size_t)L + 7) / 8) db_fail("v3 flag planes");
-		for (u32 k = 0; k < L; k++) g->edge_flags[k] ^= (u8)((planes.p[k / 8] >> (k % 8) & 1) << b);
+		plane[b] = planes.p;
 		planes.p += ((size_t)L + 7) / 8;
+	}
+	g->edge_flags = (u8*)calloc(((size_t)L + 3) / 4, 1);
+	if (!g->edge_flags) db_fail("OOM edge_flags");
+	for (u32 k = 0; k < L; k++) { // packed to two bits per edge
+		u32 flags = predicted.p[u24_load(u24_cptr(g->out_edges24, k))];
+		for (int b = 0; b < 8; b++)
+			if (plane[b]) flags ^= (u32)(plane[b][k / 8] >> (k % 8) & 1) << b;
+		if (flags > 3) db_fail("unknown link flag bits");
+		g->edge_flags[k >> 2] |= (u8)(flags << ((k & 3u) * 2));
 	}
 	predicted.p = predicted.end;
 	v3_done(&predicted);
@@ -771,8 +783,8 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 	if (!title_lens) db_fail("OOM title lengths");
 	db_reader_read_exact(r, title_lens, title_lens_bytes, "title lengths");
 
-	g->titles = (string*)malloc((size_t)g->N * sizeof(string));
-	if (!g->titles) db_fail("OOM titles array");
+	g->title_offsets = (u32*)malloc(((size_t)g->N + 1) * sizeof(u32));
+	if (!g->title_offsets) db_fail("OOM title offsets");
 	g->titles_arena = (char*)malloc((size_t)total_title_bytes);
 	if (!g->titles_arena) db_fail("OOM titles arena");
 	g->titles_arena_bytes = total_title_bytes;
@@ -783,9 +795,10 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 		u16 len = title_lens[i];
 		if ((u32)len > 65535u) db_fail("title len > 65535");
 		if (off + (u32)len > total_title_bytes) db_fail("title bytes overflow");
-		g->titles[i] = STR(g->titles_arena + off, (int)len);
+		g->title_offsets[i] = off;
 		off += (u32)len;
 	}
+	g->title_offsets[g->N] = off;
 	if (off != total_title_bytes) db_fail("title bytes sum mismatch");
 	free(title_lens);
 
@@ -794,9 +807,9 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 	u32 rt_pad = 0;
 
 	g->nr_unredir        = 0;
-	g->unredir           = NULL;
+	g->unredir_bits      = NULL;
 	g->nr_redir_titles   = 0;
-	g->redir_titles      = NULL;
+	g->redir_offsets     = NULL;
 	g->redir_arena       = NULL;
 	g->redir_arena_bytes = 0;
 	g->edge_flags        = NULL;
@@ -806,22 +819,23 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 		DB_READ(r, rt_n, "redir title count");
 		DB_READ(r, rt_bytes, "redir title bytes");
 
-		g->nr_unredir = un_n;
+		g->nr_redir_titles = rt_n;
 		if (un_n) {
-			g->unredir = (UnredirEdge*)malloc((size_t)un_n * sizeof(UnredirEdge));
-			if (!g->unredir) db_fail("OOM unredir");
+			unredir_init(g, un_n);
+			u32 count = 0, prev = 0;
 			for (u32 i = 0; i < un_n; i++) {
 				u32 src = 0, dst = 0, ridx = 0;
 				DB_READ(r, src, "unredir src");
 				DB_READ(r, dst, "unredir dest");
 				DB_READ(r, ridx, "unredir redir_idx");
-				g->unredir[i].src       = src;
-				g->unredir[i].dest      = dst;
-				g->unredir[i].redir_idx = ridx;
+				u32 edge = src < g->N ? graph_edge_index(g, src, dst) : UINT32_MAX;
+				if (edge == UINT32_MAX) db_fail("unredir edge not present in graph");
+				if (i && edge <= prev) db_fail("unredir not sorted or duplicate");
+				unredir_add(g, &count, prev = edge, ridx);
 			}
+			unredir_finish(g, count);
 		}
 
-		g->nr_redir_titles   = rt_n;
 		g->redir_arena_bytes = rt_bytes;
 		if (rt_n) {
 			u8* redir_lens = (u8*)malloc((size_t)rt_n);
@@ -831,8 +845,8 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 			rt_pad = (4u - (rt_n & 3u)) & 3u;
 			if (rt_pad) db_reader_skip(r, rt_pad, "redir lens pad");
 
-			g->redir_titles = (string*)malloc((size_t)rt_n * sizeof(string));
-			if (!g->redir_titles) db_fail("OOM redir_titles");
+			g->redir_offsets = (u32*)malloc(((size_t)rt_n + 1) * sizeof(u32));
+			if (!g->redir_offsets) db_fail("OOM redir offsets");
 			g->redir_arena = (char*)malloc((size_t)rt_bytes);
 			if (!g->redir_arena) db_fail("OOM redir_arena");
 			db_reader_read_exact(r, g->redir_arena, (size_t)rt_bytes, "redir bytes");
@@ -841,9 +855,10 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 			for (u32 i = 0; i < rt_n; i++) {
 				u32 len = (u32)redir_lens[i];
 				if (off2 + len > rt_bytes) db_fail("redir bytes overflow");
-				g->redir_titles[i] = STR(g->redir_arena + off2, (int)len);
+				g->redir_offsets[i] = off2;
 				off2 += len;
 			}
+			g->redir_offsets[rt_n] = off2;
 			if (off2 != rt_bytes) db_fail("redir bytes sum mismatch");
 			free(redir_lens);
 		}
@@ -856,18 +871,24 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 
 	if (dump_format >= 2 && db_reader_has_more(r)) {
 		link_flags_bytes = g->L;
-		g->edge_flags    = (u8*)malloc((size_t)link_flags_bytes);
+		g->edge_flags    = (u8*)calloc(((size_t)link_flags_bytes + 3) / 4, 1);
 		if (!g->edge_flags) db_fail("OOM edge_flags");
-		db_reader_read_exact(r, g->edge_flags, (size_t)link_flags_bytes, "link_flags");
-		for (u32 i = 0; i < link_flags_bytes; i++) {
-			u8 flags = g->edge_flags[i];
-			if (flags & LINK_FLAG_IS_RENAME) link_flags_rename++;
-			if (flags & LINK_FLAG_IS_INFOBOX) link_flags_infobox++;
-			if (flags & (u8) ~(LINK_FLAG_IS_RENAME | LINK_FLAG_IS_INFOBOX)) link_flags_unknown++;
+		for (u32 i = 0; i < link_flags_bytes;) { // packed to two bits per edge
+			DB_REQUIRE(r, 1, "link_flags");
+			u32 n = (u32)MIN(r->len - r->pos, (size_t)(link_flags_bytes - i));
+			for (u32 k = 0; k < n; k++, i++) {
+				u8 flags = r->buf[r->pos + k];
+				if (flags & LINK_FLAG_IS_RENAME) link_flags_rename++;
+				if (flags & LINK_FLAG_IS_INFOBOX) link_flags_infobox++;
+				if (flags & (u8) ~(LINK_FLAG_IS_RENAME | LINK_FLAG_IS_INFOBOX)) link_flags_unknown++;
+				g->edge_flags[i >> 2] |= (u8)((flags & 3u) << ((i & 3u) * 2));
+			}
+			db_reader_consume(r, n);
 		}
 		printf("[info] link flags summary: rename=%llu infobox=%llu unknown_bitmask=%llu\n",
 			   (unsigned long long)link_flags_rename, (unsigned long long)link_flags_infobox,
 			   (unsigned long long)link_flags_unknown);
+		if (link_flags_unknown) db_fail("unknown link flag bits");
 	}
 
 	u64 unknown_tail_bytes = db_reader_drain_remaining(r);

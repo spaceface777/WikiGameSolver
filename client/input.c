@@ -21,7 +21,7 @@ STATIC u32 lower_bound_titles(const Graph* g, const char* key, int keylen) {
 	u32 l = 0, r = g->N; // [l,r)
 	while (l < r) {
 		u32 m = l + (r - l) / 2;
-		if (cmp_title_key(g->titles[m], key, keylen) < 0) l = m + 1;
+		if (cmp_title_key(graph_title(g, m), key, keylen) < 0) l = m + 1;
 		else r = m;
 	}
 	return l;
@@ -68,7 +68,7 @@ STATIC void completion_cb(const char* buf, linenoiseCompletions* lc) {
 	int n = pagerank_topk_in_title_range(pretty_g, (u32)p.start, (u32)p.end, limit, ids);
 
 	for (int j = 0; j < n; j++) {
-		string t = pretty_g->titles[ids[j]];
+		string t = graph_title(pretty_g, ids[j]);
 		linenoiseAddCompletionN(lc, STR_PTR(t), STR_LEN(t));
 	}
 }
@@ -93,7 +93,7 @@ STATIC char* hints_cb(const char* buf, int* color, int* bold) {
 		return NULL;
 	}
 
-	string t = pretty_g->titles[best[0]];
+	string t = graph_title(pretty_g, best[0]);
 	if (STR_LEN(t) <= blen) {
 		// exact match or prefix longer than title; no hint
 		return NULL;

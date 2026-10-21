@@ -534,8 +534,8 @@ STATIC void bench_run(const Graph* g, u32 iters, u8 max_depth, u32 k_paths) {
 		while (t == s) t = prsampler_next(&samp);
 		samples[i].pick_pair_ns = get_monotonic_time() - pick_t0;
 
-		string  start  = g->titles[s];
-		string  target = g->titles[t];
+		string  start  = graph_title(g, s);
+		string  target = graph_title(g, t);
 		PathSet set    = {0};
 
 		u64  t0 = get_monotonic_time();

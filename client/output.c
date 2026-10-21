@@ -1,21 +1,7 @@
 STATIC int unredir_lookup(const Graph* g, u32 src, u32 dest) {
-	if (!g->unredir || g->nr_unredir == 0) return -1;
-
-	int l = 0;
-	int r = (int)g->nr_unredir - 1;
-	while (l <= r) {
-		int          m = (l + r) / 2;
-		UnredirEdge* e = g->unredir + m;
-
-		if (e->src < src) l = m + 1;
-		else if (e->src > src) r = m - 1;
-		else {
-			if (e->dest < dest) l = m + 1;
-			else if (e->dest > dest) r = m - 1;
-			else return (int)e->redir_idx;
-		}
-	}
-	return -1;
+	if (!g->nr_unredir || src >= g->N) return -1;
+	u32 edge = graph_edge_index(g, src, dest);
+	return edge == UINT32_MAX ? -1 : graph_edge_redirect(g, edge);
 }
 
 STATIC void graph_print_path(const Graph* g, const PathIDs* path) {
@@ -29,10 +15,10 @@ STATIC void graph_print_path(const Graph* g, const PathIDs* path) {
 	// First line shows the start title
 	u32 start = path->ids[0];
 	if (path->start_redir_idx < g->nr_redir_titles) {
-		println(SLIT(" -> "), g->redir_titles[path->start_redir_idx], SLIT(" (redirects to "), g->titles[start],
-				SLIT(")"));
+		println(SLIT(" -> "), graph_redir_title(g, path->start_redir_idx), SLIT(" (redirects to "),
+				graph_title(g, start), SLIT(")"));
 	} else {
-		println(SLIT(" -> "), g->titles[start]);
+		println(SLIT(" -> "), graph_title(g, start));
 	}
 
 	// Subsequent lines show what to click (dest title, or redirect title annotation)
@@ -42,9 +28,9 @@ STATIC void graph_print_path(const Graph* g, const PathIDs* path) {
 
 		int ridx = unredir_lookup(g, a, b);
 		if (ridx >= 0 && (u32)ridx < g->nr_redir_titles) {
-			println(SLIT(" -> "), g->redir_titles[ridx], SLIT(" (redirects to "), g->titles[b], SLIT(")"));
+			println(SLIT(" -> "), graph_redir_title(g, ridx), SLIT(" (redirects to "), graph_title(g, b), SLIT(")"));
 		} else {
-			println(SLIT(" -> "), g->titles[b]);
+			println(SLIT(" -> "), graph_title(g, b));
 		}
 	}
 }
@@ -69,14 +55,14 @@ STATIC void graph_write_pathset_fd(const Graph* g, int fd, const PathSet* set) {
 		{
 			u32 start = path->ids[0];
 			if (path->start_redir_idx < g->nr_redir_titles) {
-				string rt = g->redir_titles[path->start_redir_idx];
+				string rt = graph_redir_title(g, path->start_redir_idx);
 				write(fd, STR_PTR(rt), STR_LEN(rt));
 				write(fd, " (redirects to ", (int)sizeof(" (redirects to ") - 1);
-				string bt = g->titles[start];
+				string bt = graph_title(g, start);
 				write(fd, STR_PTR(bt), STR_LEN(bt));
 				write(fd, ")", 1);
 			} else {
-				string s = g->titles[start];
+				string s = graph_title(g, start);
 				write(fd, STR_PTR(s), STR_LEN(s));
 			}
 			write(fd, "\n", 1);
@@ -88,14 +74,14 @@ STATIC void graph_write_pathset_fd(const Graph* g, int fd, const PathSet* set) {
 
 			int ridx = unredir_lookup(g, a, b);
 			if (ridx >= 0 && (u32)ridx < g->nr_redir_titles) {
-				string rt = g->redir_titles[ridx];
+				string rt = graph_redir_title(g, ridx);
 				write(fd, STR_PTR(rt), STR_LEN(rt));
 				write(fd, " (redirects to ", (int)sizeof(" (redirects to ") - 1);
-				string bt = g->titles[b];
+				string bt = graph_title(g, b);
 				write(fd, STR_PTR(bt), STR_LEN(bt));
 				write(fd, ")\n", 2);
 			} else {
-				string bt = g->titles[b];
+				string bt = graph_title(g, b);
 				write(fd, STR_PTR(bt), STR_LEN(bt));
 				write(fd, "\n", 1);
 			}

@@ -139,7 +139,7 @@ STATIC void pagerank_dump(Graph* g, const char* out_path) {
 	// --- Compute string pool layout ---
 	u32 total_str_bytes = 0;
 	for (u32 i = 0; i < N; i++) {
-		total_str_bytes += (u32)STR_LEN(g->titles[i]);
+		total_str_bytes += (u32)STR_LEN(graph_title(g, i));
 	}
 
 	u32 strings_off = (u32)(sizeof(PRDumpHeader) + (size_t)N * sizeof(PRDumpEntry));
@@ -153,7 +153,7 @@ STATIC void pagerank_dump(Graph* g, const char* out_path) {
 
 	u32 str_cursor = 0;
 	for (u32 i = 0; i < N; i++) {
-		u32 slen             = (u32)STR_LEN(g->titles[i]);
+		u32 slen             = (u32)STR_LEN(graph_title(g, i));
 		entries[i].str_off   = str_cursor;
 		entries[i].alias_idx = alias[i];
 		entries[i].prob      = prob[i];
@@ -184,8 +184,8 @@ STATIC void pagerank_dump(Graph* g, const char* out_path) {
 
 	// Write string pool
 	for (u32 i = 0; i < N; i++) {
-		u32         slen = (u32)STR_LEN(g->titles[i]);
-		const char* sptr = STR_PTR(g->titles[i]);
+		u32         slen = (u32)STR_LEN(graph_title(g, i));
+		const char* sptr = STR_PTR(graph_title(g, i));
 		if (slen > 0 && fwrite(sptr, 1, slen, f) != slen) goto write_err;
 	}
 
