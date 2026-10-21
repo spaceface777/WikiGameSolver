@@ -10,6 +10,7 @@ emcc -o wasm/cli.js -O3 -flto --no-entry \
      -s MAXIMUM_MEMORY=4294967296 \
      -s ALLOW_MEMORY_GROWTH=1 \
      -s MODULARIZE=1 \
+     -s DEFAULT_TO_CXX=1 \
      -s ENVIRONMENT=worker \
      -s EXPORT_ES6=1 \
      -s EXPORTED_FUNCTIONS='[_malloc]' \

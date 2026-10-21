@@ -248,6 +248,73 @@ STATIC size_t lzma_source_fill(void* ctx_ptr, u8* dst, size_t cap, bool* out_eof
 	}
 	return produced;
 }
+
+typedef struct ZstdSourceCtx {
+	DbSource      upstream;
+	ZSTD_DStream* strm;
+	ZSTD_inBuffer in;
+	u8*           in_buf;
+	bool          in_eof;
+	bool          frame_done;
+	bool          finished;
+} ZstdSourceCtx;
+
+STATIC void zstd_source_init(ZstdSourceCtx* ctx, DbSource upstream) {
+	memset(ctx, 0, sizeof(*ctx));
+	ctx->upstream = upstream;
+	ctx->strm     = ZSTD_createDStream();
+	ctx->in_buf   = (u8*)malloc(DB_IO_BUF_SIZE);
+	if (!ctx->strm || !ctx->in_buf) {
+		fprintf(stderr, "error: OOM allocating zstd decoder\n");
+		exit(1);
+	}
+	ctx->in.src = ctx->in_buf;
+}
+
+STATIC void zstd_source_destroy(ZstdSourceCtx* ctx) {
+	ZSTD_freeDStream(ctx->strm);
+	free(ctx->in_buf);
+	ctx->in_buf = NULL;
+}
+
+STATIC size_t zstd_source_fill(void* ctx_ptr, u8* dst, size_t cap, bool* out_eof) {
+	ZstdSourceCtx* ctx = (ZstdSourceCtx*)ctx_ptr;
+	ZSTD_outBuffer out = {dst, cap, 0};
+	while (!ctx->finished && out.pos == 0) {
+		if (ctx->in.pos == ctx->in.size && !ctx->in_eof) {
+			ctx->in.size = ctx->upstream.fill(ctx->upstream.ctx, ctx->in_buf, DB_IO_BUF_SIZE, &ctx->in_eof);
+			ctx->in.pos  = 0;
+			if (ctx->in.size == 0 && !ctx->in_eof) db_fail("compressed reader source stalled");
+		}
+		if (ctx->in.pos == ctx->in.size && ctx->in_eof) {
+			if (!ctx->frame_done) db_fail("zstd stream ended unexpectedly");
+			ctx->finished = true;
+			break;
+		}
+		size_t ret = ZSTD_decompressStream(ctx->strm, &out, &ctx->in);
+		if (ZSTD_isError(ret)) {
+			fprintf(stderr, "error: zstd decode failed (%s)\n", ZSTD_getErrorName(ret));
+			exit(1);
+		}
+		ctx->frame_done = ret == 0;
+	}
+	*out_eof = ctx->finished;
+	return out.pos;
+}
+
+// Replays a reader's buffered bytes, then continues from its source (used after sniffing a stream).
+STATIC size_t db_reader_source_fill(void* ctx_ptr, u8* dst, size_t cap, bool* out_eof) {
+	DbReader* r = (DbReader*)ctx_ptr;
+	if (r->pos == r->len) {
+		if (r->eof) return *out_eof = true, 0;
+		return r->source.fill(r->source.ctx, dst, cap, out_eof);
+	}
+	size_t n = MIN(cap, r->len - r->pos);
+	memcpy(dst, r->buf + r->pos, n);
+	db_reader_consume(r, n);
+	*out_eof = r->eof && r->pos == r->len;
+	return n;
+}
 #endif
 
 enum {
@@ -326,6 +393,273 @@ STATIC void validate_graph_fully(Graph* g) {
 	g->validated = true;
 }
 
+// --- v3: the v2 sections, re-encoded by db_gen/wiki_v3.h. Each section is a u32 length plus its bytes.
+typedef struct V3Bytes {
+	u8*       data;
+	const u8 *p, *end;
+	u64       acc; // bit reader state for the low-bits section
+	int       nbits;
+} V3Bytes;
+
+STATIC V3Bytes v3_section(DbReader* r) {
+	u32 n = 0;
+	DB_READ(r, n, "v3 section length");
+	V3Bytes s = {0};
+	if (!(s.data = (u8*)malloc(n ? n : 1))) db_fail("OOM v3 section");
+	db_reader_read_exact(r, s.data, n, "v3 section");
+	s.p   = s.data;
+	s.end = s.data + n;
+	return s;
+}
+
+STATIC void v3_done(V3Bytes* s) {
+	if (s->p != s->end || s->nbits >= 8 || (s->acc & ((1u << s->nbits) - 1))) db_fail("v3 section has trailing bytes");
+	free(s->data);
+}
+
+STATIC u8 v3_byte(V3Bytes* s) {
+	if (s->p == s->end) db_fail("v3 section truncated");
+	return *s->p++;
+}
+
+STATIC u32 v3_varint(V3Bytes* s) {
+	u32 x = 0;
+	for (int shift = 0; shift < 35; shift += 7) {
+		u8 b = v3_byte(s);
+		x |= (u32)(b & 127) << shift;
+		if (!(b & 128)) return x;
+	}
+	db_fail("v3 varint");
+	return 0;
+}
+
+STATIC u32 v3_bits(V3Bytes* s, int k) {
+	while (s->nbits < k) s->acc = s->acc << 8 | v3_byte(s), s->nbits += 8;
+	s->nbits -= k;
+	return (u32)(s->acc >> s->nbits) & ((1u << k) - 1);
+}
+
+// Inverse of wiki_v3::put_gap(): symbols 1..7 are values, larger symbols carry the top 3 bits.
+STATIC u32 v3_gap(V3Bytes* sym, V3Bytes* low) {
+	u32 s = v3_byte(sym);
+	if (s < 8) {
+		if (!s) db_fail("v3 zero gap");
+		return s;
+	}
+	u32 k = (s - 8) / 4 + 3;
+	if (k > 31) db_fail("v3 gap symbol");
+	return (4u | ((s - 8) & 3)) << (k - 2) | v3_bits(low, (int)k - 2);
+}
+
+// Adjacency lists are short; qsort's comparator calls dominated v3 loading.
+STATIC void sort_u32(u32* a, u32 n) {
+	while (n > 16) {
+		u32 pivot = a[n / 2], i = 0, j = n - 1;
+		for (;;) {
+			while (a[i] < pivot) i++;
+			while (a[j] > pivot) j--;
+			if (i >= j) break;
+			u32 t  = a[i];
+			a[i++] = a[j];
+			a[j--] = t;
+		}
+		u32 split = j + 1; // recurse into the smaller side
+		if (split < n - split) sort_u32(a, split), a += split, n -= split;
+		else sort_u32(a + split, n - split), n = split;
+	}
+	for (u32 i = 1; i < n; i++) {
+		u32 x = a[i], j = i;
+		for (; j && a[j - 1] > x; j--) a[j] = a[j - 1];
+		a[j] = x;
+	}
+}
+
+STATIC void v3_titles(DbReader* r, u32 n, u32 bytes, string** titles, char** arena) {
+	V3Bytes s = v3_section(r);
+	*titles   = (string*)malloc((size_t)n * sizeof(string) + 1);
+	*arena    = (char*)malloc((size_t)bytes + 1);
+	if (!*titles || !*arena) db_fail("OOM v3 titles");
+	u32 off = 0, prev_len = 0;
+	for (u32 i = 0; i < n; i++) {
+		u32 prefix = v3_byte(&s);
+		if (prefix > prev_len) db_fail("v3 title prefix");
+		const u8* nl = (const u8*)memchr(s.p, '\n', (size_t)(s.end - s.p));
+		if (!nl) db_fail("v3 title truncated");
+		u32 len = prefix + (u32)(nl - s.p);
+		if (len > 65535 || len > bytes - off) db_fail("v3 title bytes");
+		if (prefix) memmove(*arena + off, *arena + off - prev_len, prefix);
+		memcpy(*arena + off + prefix, s.p, (size_t)(nl - s.p));
+		(*titles)[i] = STR(*arena + off, (int)len);
+		s.p          = nl + 1;
+		off += len;
+		prev_len = len;
+	}
+	if (off != bytes) db_fail("v3 title bytes sum mismatch");
+	v3_done(&s);
+}
+
+STATIC void graph_load_v3(Graph* g, DbReader* r, u32 title_bytes) {
+	u32 N = g->N, L = g->L, U = 0, R = 0, RB = 0;
+	DB_READ(r, U, "unredir count");
+	DB_READ(r, R, "redir title count");
+	DB_READ(r, RB, "redir title bytes");
+
+	V3Bytes degrees = v3_section(r), in_degrees = v3_section(r), ref_counts, refs, mask_syms, syms[26], low;
+
+	g->out_offsets = (u32*)malloc(((size_t)N + 1) * sizeof(u32));
+	g->out_edges24 = (u8*)calloc((size_t)L * 3 + 4, 1);
+	u32* order     = (u32*)malloc((size_t)N * sizeof(u32));
+	u32* indeg     = (u32*)malloc((size_t)N * sizeof(u32));
+	u32* list      = (u32*)malloc(4 * 65536 * sizeof(u32)); // up to 3 copied lists plus the rest
+	if (!g->out_offsets || !g->out_edges24 || !order || !indeg || !list) db_fail("OOM v3 edges");
+	g->out_offsets[0] = 0;
+	u64 sum = 0, insum = 0;
+	u32 max_in = 0;
+	for (u32 i = 0; i < N; i++) {
+		u32 d = v3_byte(&degrees);
+		d |= (u32)v3_byte(&degrees) << 8;
+		sum += d;
+		if (sum > L) db_fail("total_links mismatch");
+		g->out_offsets[i + 1] = (u32)sum;
+		indeg[i]              = v3_varint(&in_degrees);
+		insum += indeg[i];
+		if (indeg[i] > max_in) max_in = indeg[i];
+	}
+	if (sum != L || insum != L) db_fail("total_links mismatch");
+	v3_done(&degrees);
+	v3_done(&in_degrees);
+
+	// order[rank] = node, ranked by descending in-degree (stable counting sort).
+	u32* start = (u32*)calloc((size_t)max_in + 2, sizeof(u32));
+	if (!start) db_fail("OOM v3 ranks");
+	for (u32 i = 0; i < N; i++) start[max_in - indeg[i] + 1]++;
+	for (u32 v = 1; v <= max_in + 1; v++) start[v] += start[v - 1];
+	for (u32 i = 0; i < N; i++) order[start[max_in - indeg[i]]++] = i;
+	free(start);
+
+	g->max_out_degree = 0;
+	for (u32 i = 0; i < N; i++) {
+		if (i % 65536 == 0) { // edge sections come in blocks of 65536 nodes
+			ref_counts = v3_section(r), refs = v3_section(r), mask_syms = v3_section(r);
+			for (int c = 0; c < 26; c++) syms[c] = v3_section(r);
+			low = v3_section(r);
+		}
+		u32 d = g->out_offsets[i + 1] - g->out_offsets[i], n = 0, nrefs = v3_byte(&ref_counts);
+		if (d > g->max_out_degree) g->max_out_degree = d;
+		if (nrefs > 3) db_fail("v3 reference count");
+		for (u32 k = 0; k < nrefs; k++) {
+			u32 dist = v3_varint(&refs), shared = v3_varint(&refs);
+			if (!dist || dist > i) db_fail("v3 reference distance");
+			u32 ref = i - dist, rbeg = g->out_offsets[ref], rd = g->out_offsets[ref + 1] - rbeg;
+			if (shared > rd || shared > d) db_fail("v3 reference count");
+			// The mask lists whichever side is smaller: the copied positions, or the skipped ones.
+			u32 p = UINT32_MAX;
+			if (shared <= rd - shared) {
+				for (u32 j = 0; j < shared; j++) {
+					if ((p += v3_gap(&mask_syms, &low)) >= rd) db_fail("v3 mask position");
+					list[n++] = u24_load(u24_cptr(g->out_edges24, rbeg + p));
+				}
+			} else {
+				u32 skip = rd - shared, next = skip ? p + v3_gap(&mask_syms, &low) : UINT32_MAX;
+				for (p = 0; p < rd; p++) {
+					if (p != next) list[n++] = u24_load(u24_cptr(g->out_edges24, rbeg + p));
+					else next = --skip ? next + v3_gap(&mask_syms, &low) : UINT32_MAX;
+				}
+				if (next != UINT32_MAX) db_fail("v3 mask position");
+			}
+		}
+		if (nrefs > 1) {
+			sort_u32(list, n);
+			u32 m = 0;
+			for (u32 k = 0; k < n; k++)
+				if (!m || list[k] != list[m - 1]) list[m++] = list[k];
+			n = m;
+		}
+		if (n > d) db_fail("v3 copied links exceed degree");
+		// The rest arrive in rank order: sort them and merge with the copied links.
+		u32 *rest = list + n, nrest = d - n, prev = UINT32_MAX;
+		for (u32 j = 0; j < nrest; j++) {
+			u32 c = j ? 1 + MIN((u32)(31 - __builtin_clz(prev + 1)), 24u) : 0;
+			prev += v3_gap(&syms[c], &low);
+			if (prev >= N) db_fail("v3 link rank");
+			rest[j] = order[prev];
+		}
+		sort_u32(rest, nrest);
+		u8* out = u24_ptr(g->out_edges24, g->out_offsets[i]);
+		for (u32 a = 0, b = 0, last = UINT32_MAX; a + b < d; out += 3) {
+			u32 v = b == nrest || (a < n && list[a] < rest[b]) ? list[a++] : rest[b++];
+			if (last != UINT32_MAX && v <= last) db_fail("v3 adjacency not strictly sorted");
+			u24_store(out, last = v);
+		}
+		if ((i + 1) % 65536 == 0 || i + 1 == N) {
+			v3_done(&ref_counts);
+			v3_done(&refs);
+			v3_done(&mask_syms);
+			for (int c = 0; c < 26; c++) v3_done(&syms[c]);
+			v3_done(&low);
+		}
+	}
+	free(list);
+	free(order);
+	free(indeg);
+
+	v3_titles(r, N, title_bytes, &g->titles, &g->titles_arena);
+	g->titles_arena_bytes = title_bytes;
+
+	// Redirect annotations: each target's aliases, then per link to such a target one bit, and the alias rank when set.
+	V3Bytes alias_lists = v3_section(r), alias_bits = v3_section(r), alias_ranks = v3_section(r);
+	u32*    alias_off = (u32*)malloc(((size_t)N + 1) * sizeof(u32));
+	u32*    alias_ids = (u32*)malloc(((size_t)MIN(U, R) + 1) * sizeof(u32));
+	g->unredir        = (UnredirEdge*)malloc(((size_t)U + 1) * sizeof(UnredirEdge));
+	if (!alias_off || !alias_ids || !g->unredir) db_fail("OOM v3 aliases");
+	alias_off[0] = 0;
+	for (u32 i = 0; i < N; i++) {
+		u32 n = v3_varint(&alias_lists);
+		if (n > MIN(U, R) - alias_off[i]) db_fail("v3 alias count");
+		for (u32 k = 0; k < n; k++)
+			if ((alias_ids[alias_off[i] + k] = v3_varint(&alias_lists)) >= R) db_fail("v3 alias id");
+		alias_off[i + 1] = alias_off[i] + n;
+	}
+	u32 u = 0;
+	for (u32 s = 0; s < N; s++)
+		for (u32 k = g->out_offsets[s]; k < g->out_offsets[s + 1]; k++) {
+			u32 dest = u24_load(u24_cptr(g->out_edges24, k)), n = alias_off[dest + 1] - alias_off[dest];
+			if (!n || !v3_bits(&alias_bits, 1)) continue;
+			u32 v = v3_varint(&alias_ranks);
+			if (v >= n || u == U) db_fail("v3 alias rank");
+			g->unredir[u++] = (UnredirEdge){s, dest, alias_ids[alias_off[dest] + v]};
+		}
+	if (u != U) db_fail("v3 unredir count");
+	g->nr_unredir = U;
+	v3_done(&alias_lists);
+	v3_done(&alias_bits);
+	v3_done(&alias_ranks);
+	free(alias_off);
+	free(alias_ids);
+
+	g->nr_redir_titles   = R;
+	g->redir_arena_bytes = RB;
+	v3_titles(r, R, RB, &g->redir_titles, &g->redir_arena);
+
+	// Flags: each target's predicted value, then one bitmap per bit that differs anywhere.
+	V3Bytes predicted = v3_section(r), planes = v3_section(r);
+	if ((size_t)(predicted.end - predicted.p) != N) db_fail("v3 flag predictions");
+	u8 active     = v3_byte(&planes);
+	g->edge_flags = (u8*)malloc((size_t)L + 1);
+	if (!g->edge_flags) db_fail("OOM edge_flags");
+	for (u32 k = 0; k < L; k++) g->edge_flags[k] = predicted.p[u24_load(u24_cptr(g->out_edges24, k))];
+	for (int b = 0; b < 8; b++) {
+		if (!(active >> b & 1)) continue;
+		if ((size_t)(planes.end - planes.p) < ((size_t)L + 7) / 8) db_fail("v3 flag planes");
+		for (u32 k = 0; k < L; k++) g->edge_flags[k] ^= (u8)((planes.p[k / 8] >> (k % 8) & 1) << b);
+		planes.p += ((size_t)L + 7) / 8;
+	}
+	predicted.p = predicted.end;
+	v3_done(&predicted);
+	v3_done(&planes);
+	db_reader_drain_remaining(r);
+}
+
 STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 	puts("Processing data...");
 
@@ -361,6 +695,15 @@ STATIC void graph_load_from_reader(Graph* g, DbReader* r) {
 	if (g->N > 0xFFFFFFu) {
 		fprintf(stderr, "error: N=%u does not fit in 24-bit ids; disable u24 or update format\n", g->N);
 		exit(1);
+	}
+
+	if (dump_format >= 3) {
+		graph_load_v3(g, r, total_title_bytes);
+		log_ts("processed db file");
+		validate_graph_fully(g);
+		search_prepare_graph(g);
+		log_ts("validated db file");
+		return;
 	}
 
 	// --- read outdegrees (u16 per node), build out_offsets
@@ -592,10 +935,25 @@ STATIC void graph_load_from_stream(Graph* g, DbStreamFillFn fill, void* ctx, boo
 
 #ifndef NO_COMPRESSION
 	LzmaSourceCtx lzma_ctx;
+	ZstdSourceCtx zstd_ctx;
+	DbReader      probe;
+	bool          zstd = false;
 	if (is_compressed) {
-		lzma_source_init(&lzma_ctx, source);
-		source.fill = lzma_source_fill;
-		source.ctx  = &lzma_ctx;
+		// Sniff xz vs zstd, then replay the probed bytes into the decoder.
+		db_reader_init(&probe, source);
+		DB_REQUIRE(&probe, 4, "compressed db signature");
+		zstd        = !memcmp(probe.buf + probe.pos, "\x28\xb5\x2f\xfd", 4);
+		source.fill = db_reader_source_fill;
+		source.ctx  = &probe;
+		if (zstd) {
+			zstd_source_init(&zstd_ctx, source);
+			source.fill = zstd_source_fill;
+			source.ctx  = &zstd_ctx;
+		} else {
+			lzma_source_init(&lzma_ctx, source);
+			source.fill = lzma_source_fill;
+			source.ctx  = &lzma_ctx;
+		}
 	}
 #else
 	(void)is_compressed;
@@ -607,7 +965,11 @@ STATIC void graph_load_from_stream(Graph* g, DbStreamFillFn fill, void* ctx, boo
 	db_reader_destroy(&reader);
 
 #ifndef NO_COMPRESSION
-	if (is_compressed) lzma_source_destroy(&lzma_ctx);
+	if (is_compressed) {
+		if (zstd) zstd_source_destroy(&zstd_ctx);
+		else lzma_source_destroy(&lzma_ctx);
+		db_reader_destroy(&probe);
+	}
 #endif
 }
 

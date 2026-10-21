@@ -31,7 +31,7 @@
 // ----------------------------------------------------------------------------
 // Configuration
 // ----------------------------------------------------------------------------
-#define DUMP_FORMAT_VERSION 2
+#define DUMP_FORMAT_VERSION 3
 
 #define MAX_DEPTH    200
 #define PATH_CAP     256 // hard cap for internal arrays; must be > max_depth and <= 255+1
@@ -140,6 +140,10 @@ STATIC Graph G = {0};
 
 #ifndef NO_COMPRESSION
 #include "lzma.h"
+#undef B // liblzma leaves these defined; zstd uses them as identifiers.
+#undef C
+#undef D
+#include "thirdparty/zstddeclib.c"
 #endif
 
 #ifdef ENABLE_SERVER

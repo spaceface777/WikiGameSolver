@@ -25,7 +25,7 @@ jobs:
     - name: Prerequisites
       id: setup
       run: |
-        sudo apt install -y jq xz-utils zstd libxml2-dev libgc-dev libicu-dev
+        sudo apt install -y jq zstd libxml2-dev libgc-dev libicu-dev
         wiki='${{ matrix.lang }}wiki'
         curl -fsSL --retry 3 https://dumps.wikimedia.org/index.json > index.json
         job=$(jq -er --arg wiki "$wiki" '.wikis[$wiki].jobs | if has("articlesdumprecombine") then "articlesdumprecombine" else "articlesdump" end' index.json)
@@ -66,7 +66,7 @@ jobs:
         clang++ -Ofast -flto -march=native -mtune=native -I/usr/include/libxml2 db_gen/db_gen.cc -o gen -std=c++17 -lxml2 -lgc -licuuc
         mkfifo "$work/source.fifo"
         python3 db_gen/sidecar.py hash < "$work/source.fifo" > "$work/source.hash" & hash_pid=$!
-        if ! curl -fL --retry 3 "$uri" | tee "$work/source.fifo" | bzcat | ./gen '${{ steps.setup.outputs.date }}' --meta-spool "$work/pages.spool" | xz -C crc32 --lzma2=preset=9e,lc=4,pb=2 -f - > "$lang.bin.part"; then
+        if ! curl -fL --retry 3 "$uri" | tee "$work/source.fifo" | bzcat | ./gen '${{ steps.setup.outputs.date }}' --meta-spool "$work/pages.spool" | zstd -q -19 > "$lang.bin.part"; then
           wait "$hash_pid" || true
           exit 1
         fi

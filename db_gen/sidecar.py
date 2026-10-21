@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Hash compressed source stdin, or bind a generator census to its graph (format 1)."""
 import hashlib
-import lzma
 import struct
 import subprocess
 import sys
@@ -40,14 +39,17 @@ elif len(sys.argv) == 8 and sys.argv[1] == 'build':
         raise ValueError('invalid source binding')
     with open(graph, 'rb') as asset:
         asset_sha = digest(asset)
-    with lzma.open(graph) as raw:
+    process = subprocess.Popen(['zstd', '-q', '-dc', graph], stdout=subprocess.PIPE)
+    with process.stdout as raw:
         header = raw.read(8)
-        if header[:4] != b'WIKI' or len(header) != 8 or struct.unpack('<I', header[4:])[0] & 255 != 2:
+        if header[:4] != b'WIKI' or len(header) != 8 or struct.unpack('<I', header[4:])[0] & 255 != 3:
             raise ValueError('unsupported graph')
         sha = hashlib.sha256(header)
         for block in chunks(raw):
             sha.update(block)
         raw_sha = sha.hexdigest()
+    if process.wait() != 0:
+        raise RuntimeError('graph decompression failed')
     with open(census, 'rb') as records, open(output, 'xb') as target:
         policy, unicode = struct.unpack('<II', records.read(8))
         if policy != 1 or records.read(4) != b'SINF':

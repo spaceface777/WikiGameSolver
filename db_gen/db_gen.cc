@@ -2,6 +2,7 @@
 #include <gc/gc.h>
 
 #include "wiki_links.h"
+#include "wiki_v3.h"
 #include <libxml/parser.h>
 #include <libxml/xmlreader.h>
 #include <unistd.h>
@@ -224,7 +225,7 @@ void nop(void* p) {
 #include "map.h"
 
 static int       DUMP_DATE           = 221201;
-static const int DUMP_FORMAT_VERSION = 2;
+static const int DUMP_FORMAT_VERSION = 3;
 
 map_string_string    string_data = new_map_string_string();
 map_string_stringptr link_map    = new_map_string_stringptr();
@@ -687,228 +688,22 @@ int trim_empty_pages() {
 
 void write_db() {
 	fprintf(stderr, "Writing db...\n");
-	FILE* f   = stdout;
-	char* buf = (char*)GC_malloc(16 << 20);
-	setvbuf(f, buf, _IOFBF, 16 << 20);
-
-	if (fwrite("WIKI", 1, 4, f) != 4) {
-		perror("header");
-		exit(1);
-	}
-
-	uint32_t version = (DUMP_DATE << 8) | DUMP_FORMAT_VERSION;
-	if (fwrite(&version, sizeof(version), 1, f) != 1) {
-		perror("version");
-		exit(1);
-	}
-
-	int32_t num_titles = (int32_t)page_count;
-	if (fwrite(&num_titles, sizeof(num_titles), 1, f) != 1) {
-		perror("num_titles");
-		exit(1);
-	}
-
-	uint32_t total_links = 0;
+	wiki_v3::Graph g;
+	g.version = (DUMP_DATE << 8) | DUMP_FORMAT_VERSION;
+	g.offsets.push_back(0);
 	for (int i = 0; i < page_count; i++) {
-		total_links += (uint32_t)links[i].n;
-	}
-	if (fwrite(&total_links, sizeof(total_links), 1, f) != 1) {
-		perror("total_links");
-		exit(1);
-	}
-
-	uint32_t total_title_bytes = 0;
-	for (int i = 0; i < page_count; i++) {
-		total_title_bytes += (uint32_t)titles[i].len;
-	}
-	if (fwrite(&total_title_bytes, sizeof(total_title_bytes), 1, f) != 1) {
-		perror("fwrite");
-		exit(1);
-	}
-
-	uint32_t outdegree_pad_u16 = (page_count % 4) ? (uint32_t)(4 - (page_count % 4)) : 0u;
-	uint32_t redir_len_pad     = (4u - (redir_titles_n & 3u)) & 3u;
-
-	for (int i = 0; i < page_count; i++) {
-		uint16_t num_links = (uint16_t)links[i].n;
-		if (fwrite(&num_links, sizeof(num_links), 1, f) != 1) {
-			perror("fwrite");
-			exit(1);
-		}
-	}
-
-	{
-		char zeros[8] = {0};
-		if (outdegree_pad_u16) {
-			if (fwrite(zeros, sizeof(uint16_t), outdegree_pad_u16, f) != outdegree_pad_u16) {
-				perror("fwrite");
-				exit(1);
-			}
-		}
-	}
-
-	for (int i = 0; i < page_count; i++) {
+		g.titles.push_back(titles[i]);
 		for (int j = 0; j < links[i].n; j++) {
-			int32_t link = links[i].edges[j].id;
-			char*   p    = (char*)&link;
-			if (p[3] != 0) {
-				perror("link overflow");
-			}
-			if (fwrite(&link, 4, 1, f) != 1) {
-				perror("fwrite");
-				exit(1);
-			}
+			g.edges.push_back((uint32_t)links[i].edges[j].id);
+			g.flags.push_back(links[i].edges[j].flags);
 		}
+		g.offsets.push_back((uint32_t)g.edges.size());
 	}
-
-	for (int i = 0; i < page_count; i++) {
-		uint16_t title_len = (uint16_t)titles[i].len;
-		if (fwrite(&title_len, sizeof(title_len), 1, f) != 1) {
-			perror("fwrite");
-			exit(1);
-		}
-	}
-
-	for (int i = 0; i < page_count; i++) {
-		if (fwrite(titles[i], 1, titles[i].len, f) != titles[i].len) {
-			perror("fwrite");
-			exit(1);
-		}
-	}
-
-	/* ------------------------------
-	   format v2 extension (append-only):
-	   [u32 unredir_n]
-	   [u32 redir_titles_n]
-	   [u32 redir_titles_bytes]
-	   [ (u32 src,u32 dest,u32 redir_idx) * unredir_n ]
-	   [ u8 redir_title_len * redir_titles_n ]
-	   [ padding to 4 bytes ]
-	   [ redir_titles bytes ]
-	   ------------------------------ */
-
-	{
-		uint32_t n      = unredir_n;
-		uint32_t rt     = redir_titles_n;
-		uint32_t rbytes = redir_titles_bytes;
-
-		if (fwrite(&n, sizeof(n), 1, f) != 1) {
-			perror("unredir_n");
-			exit(1);
-		}
-		if (fwrite(&rt, sizeof(rt), 1, f) != 1) {
-			perror("redir_titles_n");
-			exit(1);
-		}
-		if (fwrite(&rbytes, sizeof(rbytes), 1, f) != 1) {
-			perror("redir_titles_bytes");
-			exit(1);
-		}
-
-		for (uint32_t i = 0; i < unredir_n; i++) {
-			if (fwrite(&unredir_edges[i].src, sizeof(uint32_t), 1, f) != 1) {
-				perror("unredir");
-				exit(1);
-			}
-			if (fwrite(&unredir_edges[i].dest, sizeof(uint32_t), 1, f) != 1) {
-				perror("unredir");
-				exit(1);
-			}
-			if (fwrite(&unredir_edges[i].redir_idx, sizeof(uint32_t), 1, f) != 1) {
-				perror("unredir");
-				exit(1);
-			}
-		}
-
-		for (uint32_t i = 0; i < redir_titles_n; i++) {
-			if (redir_titles[i].len > 255) {
-				fprintf(stderr, "redirect title too long for u8 len: %.*s\n", (int)redir_titles[i].len,
-						(const char*)redir_titles[i].p());
-				exit(1);
-			}
-			uint8_t l = (uint8_t)redir_titles[i].len;
-			if (fwrite(&l, 1, 1, f) != 1) {
-				perror("redir_title_len");
-				exit(1);
-			}
-		}
-
-		/* pad to 4 bytes */
-		{
-			char zeros[8] = {0};
-			if (redir_len_pad) {
-				if (fwrite(zeros, 1, redir_len_pad, f) != redir_len_pad) {
-					perror("redir_title_len_pad");
-					exit(1);
-				}
-			}
-		}
-
-		for (uint32_t i = 0; i < redir_titles_n; i++) {
-			if (fwrite(redir_titles[i], 1, redir_titles[i].len, f) != redir_titles[i].len) {
-				perror("redir_title_bytes");
-				exit(1);
-			}
-		}
-	}
-
-	/* ------------------------------
-	   section 5 (append-only):
-	   [ u8 link_flags[total_links] ]
-	   flags bitfield per flattened edge in section 2 order.
-	   ------------------------------ */
-	for (int i = 0; i < page_count; i++) {
-		for (int j = 0; j < links[i].n; j++) {
-			uint8_t flags = links[i].edges[j].flags;
-			if (fwrite(&flags, 1, 1, f) != 1) {
-				perror("link_flags");
-				exit(1);
-			}
-		}
-	}
-
-	uint64_t header_bytes = 4u + (uint64_t)sizeof(version) + (uint64_t)sizeof(num_titles) +
-							(uint64_t)sizeof(total_links) + (uint64_t)sizeof(total_title_bytes);
-	uint64_t outdegree_bytes =
-		(uint64_t)page_count * (uint64_t)sizeof(uint16_t) + (uint64_t)outdegree_pad_u16 * (uint64_t)sizeof(uint16_t);
-	uint64_t edge_bytes             = (uint64_t)total_links * 4u;
-	uint64_t title_len_bytes        = (uint64_t)page_count * (uint64_t)sizeof(uint16_t);
-	uint64_t title_bytes            = (uint64_t)total_title_bytes;
-	uint64_t v2_header_bytes        = 3u * (uint64_t)sizeof(uint32_t);
-	uint64_t v2_unredir_tuple_bytes = (uint64_t)unredir_n * 3u * (uint64_t)sizeof(uint32_t);
-	uint64_t v2_redir_len_bytes     = (uint64_t)redir_titles_n + (uint64_t)redir_len_pad;
-	uint64_t v2_redir_title_bytes   = (uint64_t)redir_titles_bytes;
-	uint64_t v2_total_bytes   = v2_header_bytes + v2_unredir_tuple_bytes + v2_redir_len_bytes + v2_redir_title_bytes;
-	uint64_t link_flags_bytes = (uint64_t)total_links;
-	uint64_t total_output_bytes =
-		header_bytes + outdegree_bytes + edge_bytes + title_len_bytes + title_bytes + v2_total_bytes + link_flags_bytes;
-
-	int value_width = 1;
-	for (uint64_t t = total_output_bytes; t >= 10; t /= 10) {
-		value_width++;
-	}
-	auto print_size_stat = [&](const char* label, uint64_t bytes) {
-		double pct = (total_output_bytes == 0) ? 0.0 : (100.0 * (double)bytes / (double)total_output_bytes);
-		fprintf(stderr, "  %-32s %*llu (%.2f%%)\n", label, value_width, (unsigned long long)bytes, pct);
-	};
-
-	fprintf(stderr, "Output size stats (bytes):\n");
-	print_size_stat("header:", header_bytes);
-	print_size_stat("section1_outdegree_u16_plus_pad:", outdegree_bytes);
-	print_size_stat("section2_edges_u32:", edge_bytes);
-	print_size_stat("section3_title_lens_u16:", title_len_bytes);
-	print_size_stat("section4_title_bytes:", title_bytes);
-	print_size_stat("section5_v2_total:", v2_total_bytes);
-	print_size_stat("  section5_v2_header:", v2_header_bytes);
-	print_size_stat("  section5_unredir_tuples:", v2_unredir_tuple_bytes);
-	print_size_stat("  section5_redir_lens_plus_pad:", v2_redir_len_bytes);
-	print_size_stat("  section5_redir_title_bytes:", v2_redir_title_bytes);
-	print_size_stat("section6_link_flags:", link_flags_bytes);
-	print_size_stat("total_output_bytes:", total_output_bytes);
-
-	fflush(f);
-	sync();
-	GC_free(buf);
+	for (uint32_t i = 0; i < redir_titles_n; i++) g.redir_titles.push_back(redir_titles[i]);
+	for (uint32_t i = 0; i < unredir_n; i++)
+		g.unredir.push_back({unredir_edges[i].src, unredir_edges[i].dest, unredir_edges[i].redir_idx});
+	wiki_v3::write(stdout, g);
+	fflush(stdout);
 }
 
 static const int MAX_REDIRECT_HOPS = 128;
@@ -1323,8 +1118,8 @@ int main(int argc, char** argv) {
 	/* build redirect witness table for edges that are only possible via redirects */
 	build_unredirect_db();
 
-	write_db();
 	try {
+		write_db();
 		meta::need(!ferror(stdout), "graph output failed");
 		finish_metadata();
 	} catch (const std::exception& e) {
